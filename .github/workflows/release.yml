@@ -39,28 +39,27 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # electron-builder 构建安装包并发布到 GitHub Release：
+      # 只构建，不在这里 publish（更可控）：
       # - Windows: dist/AI-Hub-<version>-x64.exe（NSIS 安装程序）
       # - macOS:   dist/AI-Hub-<version>-x64.dmg + .zip
-      # GH_TOKEN 由 Actions 自动提供（secrets.GITHUB_TOKEN）
       # CSC_IDENTITY_AUTO_DISCOVERY=false：无签名证书环境不尝试签名（构建不失败）；
       # 需要正式签名时删除该行并在仓库 secrets 配置 CSC_LINK/CSC_KEY_PASSWORD。
-      - name: Build & publish installer
+      - name: Build installer
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npx electron-builder --publish always
+        run: npx electron-builder
 
-      # 诊断：列出实际产物（无论 build 是否成功都会执行，方便排错）
+      # 诊断：列出实际产物（Windows runner 默认 PowerShell 显式用 bash 跑 ls/find）
       - name: List dist artifacts
         if: always()
+        shell: bash
         run: |
           echo "=== dist/ contents ==="
           ls -laR dist/ 2>&1 || echo "no dist/ directory"
           echo "=== file sizes ==="
           find dist/ -type f 2>/dev/null -exec ls -lh {} \; || true
 
-      # 兜底：无论是否成功，把 dist/ 上传到 GitHub Artifacts 方便下载诊断
+      # 兜底：把 dist/ 上传到 GitHub Artifacts 方便下载诊断
       - name: Upload dist artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,3 +68,42 @@ jobs:
           path: dist/
           if-no-files-found: ignore
           retention-days: 7
+
+  # 显式上传到 GitHub Release（更可控，避免 electron-builder --publish 静默失败）
+  release:
+    needs: build
+    runs-on: ubuntu-latest # Release 创建不依赖具体平台，用免费 runner
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      # 把两个平台构建产物的 dist/ 都下载下来
+      - name: Download Windows dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-windows-latest
+          path: dist-windows
+      - name: Download macOS dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-macos-latest
+          path: dist-macos
+
+      # 合并到一个 dist/ 目录（action-gh-release 的 files 模式不直接跨目录）
+      - name: Merge artifacts
+        run: |
+          mkdir -p dist
+          cp -r dist-windows/. dist/ 2>/dev/null || echo "no windows dist"
+          cp -r dist-macos/. dist/ 2>/dev/null || echo "no macos dist"
+          echo "=== merged dist ==="
+          ls -laR dist/
+
+      # 上传到 GitHub Release（自动用 tag 名创建/更新 Release）
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
+          generate_release_notes: true
+          fail_on_unmatched_files: false
