@@ -1,0 +1,52 @@
+name: Build & Release
+
+# 触发方式：推送 v* 格式的 tag（如 v0.1.0、v1.2.3）
+#   git tag v0.1.0
+#   git push origin v0.1.0
+# 构建完成后自动把 Windows NSIS 安装包 + macOS dmg/zip 上传到同名 GitHub Release。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write # 允许创建/更新 GitHub Release 并上传资产
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false # 一个平台失败不阻塞另一个
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # package.json 的 version 与 tag 同步（去掉前导 v：v1.2.3 → 1.2.3）
+      - name: Sync version from tag
+        run: node scripts/sync-version.js
+        env:
+          AIHUB_TAG: ${{ github.ref_name }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      # electron-builder 构建安装包并发布到 GitHub Release：
+      # - Windows: dist/AI-Hub-<version>-x64.exe（NSIS 安装程序）
+      # - macOS:   dist/AI-Hub-<version>-x64.dmg + .zip
+      # GH_TOKEN 由 Actions 自动提供（secrets.GITHUB_TOKEN）
+      # CSC_IDENTITY_AUTO_DISCOVERY=false：无签名证书环境不尝试签名（构建不失败）；
+      # 需要正式签名时删除该行并在仓库 secrets 配置 CSC_LINK/CSC_KEY_PASSWORD。
+      - name: Build & publish installer
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --publish always

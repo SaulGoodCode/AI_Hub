@@ -1,0 +1,25 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+out/
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# Electron 用户数据（本地登录态/配置，绝不上传）
+config.json
+aihub.log
+
+# 内部工具脚本（个人使用，不上传）
+scripts/build_icons.py

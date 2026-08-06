@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>AI Hub</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="titlebar">
+    <div class="titlebar-drag">
+      <img src="app-icon.png" class="app-logo" alt="" draggable="false" />
+      <span class="app-title">AI Hub</span>
+    </div>
+    <div class="titlebar-controls">
+      <button id="btn-pin" class="ctrl" title="窗口置顶">📌</button>
+      <button id="btn-min" class="ctrl win-only" title="最小化">─</button>
+      <button id="btn-max" class="ctrl win-only" title="最大化">□</button>
+      <button id="btn-close" class="ctrl close win-only" title="隐藏到托盘">✕</button>
+    </div>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar">
+      <div class="sidebar-head">
+        <span>AI 站点</span>
+        <button id="btn-collapse" title="收起侧边栏">«</button>
+      </div>
+      <ul id="site-list"></ul>
+      <button id="btn-add" title="添加站点">
+        <span class="btn-icon">＋</span><span class="btn-text">添加站点</span>
+      </button>
+      <div class="sidebar-foot">
+        <button id="btn-settings" title="打开设置">
+          <span class="btn-icon">⚙</span><span class="btn-text">设置</span>
+        </button>
+        <span id="foot-hint"></span>
+      </div>
+    </aside>
+    <main id="content">
+      <div id="empty-hint" class="hidden">
+        <p>还没有可用站点</p>
+        <p>点击上方 ＋ 添加一个 AI 聊天网址</p>
+      </div>
+    </main>
+  </div>
+
+  <!-- 添加/编辑站点弹窗 -->
+  <div id="modal-mask" class="modal-mask hidden">
+    <div id="modal" class="modal">
+      <h3 id="modal-title">添加 AI 站点</h3>
+      <label class="field">
+        <span>名称</span>
+        <input id="inp-name" type="text" placeholder="如：ChatGPT / Kimi" spellcheck="false" />
+      </label>
+      <label class="field">
+        <span>网址</span>
+        <input id="inp-url" type="text" placeholder="https://example.com/chat/" spellcheck="false" />
+      </label>
+      <p class="tip">提示：站点登录后，登录状态会自动保存在本地，下次打开无需重新登录。</p>
+      <div class="modal-actions">
+        <button id="btn-del-site" class="danger hidden">删除站点</button>
+        <span class="spacer"></span>
+        <button id="btn-cancel">取消</button>
+        <button id="btn-save" class="primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除站点确认弹窗 -->
+  <div id="modal-del-mask" class="modal-mask hidden">
+    <div class="modal modal-del">
+      <h3>删除站点</h3>
+      <p class="del-text">确定删除「<span id="del-site-name"></span>」？</p>
+      <label class="field chk-field">
+        <input type="checkbox" id="chk-del-data" />
+        <span class="chk-label">同时删除该站点的本地数据和缓存（Cookie、登录状态、IndexedDB 等将一并清除）</span>
+      </label>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="btn-del-cancel">取消</button>
+        <button id="btn-del-confirm" class="primary danger-btn">删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗 -->
+  <div id="modal-settings-mask" class="modal-mask hidden">
+    <div class="modal">
+      <h3>设置</h3>
+      <div class="field">
+        <span>全局快捷键（唤起 / 隐藏窗口）</span>
+        <div class="shortcut-row">
+          <button id="btn-record" class="record-btn" title="点击后按下新的快捷键">Ctrl+Shift+Space</button>
+          <span id="record-hint">点击按钮后按下新组合键</span>
+        </div>
+      </div>
+      <div class="field row-field">
+        <span>窗口置顶</span>
+        <label class="switch">
+          <input type="checkbox" id="chk-top" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="field">
+        <span>外观主题</span>
+        <div class="theme-row" id="theme-row">
+          <button type="button" class="theme-opt" data-theme="light" title="浅色">
+            <span class="theme-swatch swatch-light"></span>亮色
+          </button>
+          <button type="button" class="theme-opt" data-theme="dark" title="深色">
+            <span class="theme-swatch swatch-dark"></span>暗色
+          </button>
+          <button type="button" class="theme-opt" data-theme="system" title="跟随系统">
+            <span class="theme-swatch swatch-system"></span>跟随系统
+          </button>
+        </div>
+        <p class="tip">主题会同步到内置网页（支持深色模式的站点自动跟随）。</p>
+      </div>
+      <p class="tip">提示：至少需要一个修饰键（Ctrl / ⌘ / Alt / Shift）。按 ESC 取消录制。修改后立即生效并写入配置文件。</p>
+      <div class="modal-actions">
+        <button id="btn-settings-close">关闭</button>
+        <button id="btn-settings-save" class="primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

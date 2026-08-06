@@ -1,0 +1,62 @@
+{
+  "name": "ai-chat-hub",
+  "productName": "AI Hub",
+  "version": "0.1.0",
+  "description": "把多个 AI 聊天网站（Claude/DeepSeek/豆包…）装进一个可随时唤起的桌面面板：全局快捷键呼出、登录态持久化、单窗口多站点、亮暗主题。",
+  "main": "main.js",
+  "author": "Saul",
+  "license": "MIT",
+  "scripts": {
+    "start": "node scripts/launch.js",
+    "dev": "node scripts/launch.js --dev",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist": "electron-builder",
+    "version:patch": "npm version patch --no-git-tag-version",
+    "version:minor": "npm version minor --no-git-tag-version",
+    "version:major": "npm version major --no-git-tag-version",
+    "release:win": "npm run version:patch && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.saul.aihub",
+    "productName": "AI Hub",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "AI-Hub-${version}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "build/icon.ico",
+      "build/icon.png",
+      "build/tray.png",
+      "build/tray.ico"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "AI Hub",
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.productivity"
+    }
+  },
+  "devDependencies": {
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3"
+  }
+}
