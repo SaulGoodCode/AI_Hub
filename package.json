@@ -47,12 +47,10 @@
       "createDesktopShortcut": true
     },
     "mac": {
-      "target": [
-        "dmg",
-        "zip"
-      ],
+      "target": "dmg",
       "icon": "build/icon.png",
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "publish": null
     }
   },
   "devDependencies": {
