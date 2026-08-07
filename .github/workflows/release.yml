@@ -1,21 +1,23 @@
 name: Build & Release
 
-# 触发方式：推送 v* 格式的 tag（如 v0.1.0、v1.2.3）
-#   git tag v0.1.0
-#   git push origin v0.1.0
-# 构建完成后自动把 Windows NSIS 安装包 + macOS dmg/zip 上传到同名 GitHub Release。
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v0.1.0) - leave empty to use current package.json version'
+        required: false
+        default: ''
 
 permissions:
-  contents: write # 允许创建/更新 GitHub Release 并上传资产
+  contents: write
 
 jobs:
   build:
     strategy:
-      fail-fast: false # 一个平台失败不阻塞另一个
+      fail-fast: false
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -23,33 +25,61 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
           cache: npm
 
-      # package.json 的 version 与 tag 同步（去掉前导 v：v1.2.3 → 1.2.3）
-      - name: Sync version from tag
+      - name: Sync version from tag (push)
+        if: github.event_name == 'push'
         run: node scripts/sync-version.js
         env:
           AIHUB_TAG: ${{ github.ref_name }}
 
+      - name: Sync version from input (manual)
+        if: github.event_name == 'workflow_dispatch' && inputs.version != ''
+        run: node scripts/sync-version.js
+        env:
+          AIHUB_TAG: ${{ inputs.version }}
+
       - name: Install dependencies
         run: npm ci
 
-      # 只构建，不在这里 publish（更可控）：
-      # - Windows: dist/AI-Hub-<version>-x64.exe（NSIS 安装程序）
-      # - macOS:   dist/AI-Hub-<version>-x64.dmg + .zip
-      # CSC_IDENTITY_AUTO_DISCOVERY=false：无签名证书环境不尝试签名（构建不失败）；
-      # 需要正式签名时删除该行并在仓库 secrets 配置 CSC_LINK/CSC_KEY_PASSWORD。
-      - name: Build installer
+      - name: Build installer (macOS)
+        if: runner.os == 'macOS'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
-        run: npx electron-builder
+          CI: true
+          ELECTRON_NO_SANDBOX: 1
+          ELECTRON_DISABLE_SANDBOX: 1
+          # 强制在 CI 环境下不尝试签名
+          APPLE_ID: ''
+          APPLE_APP_SPECIFIC_PASSWORD: ''
+          CSC_LINK: ''
+          CSC_KEY_PASSWORD: ''
+        run: |
+          echo "Node: $(node --version)"
+          echo "NPM: $(npm --version)"
+          npm run dist:mac 2>&1
 
-      # 诊断：列出实际产物（Windows runner 默认 PowerShell 显式用 bash 跑 ls/find）
+      - name: Build installer (Windows)
+        if: runner.os == 'Windows'
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          CI: true
+          ELECTRON_NO_SANDBOX: 1
+          ELECTRON_DISABLE_SANDBOX: 1
+          CSC_LINK: ''
+          CSC_KEY_PASSWORD: ''
+        run: |
+          echo "Node: $(node --version)"
+          echo "NPM: $(npm --version)"
+          npm run dist:win 2>&1
+
       - name: List dist artifacts
         if: always()
         shell: bash
@@ -59,35 +89,36 @@ jobs:
           echo "=== file sizes ==="
           find dist/ -type f 2>/dev/null -exec ls -lh {} \; || true
 
-      # 兜底：把 dist/ 上传到 GitHub Artifacts 方便下载诊断
       - name: Upload dist artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.os }}
-          path: dist/
+          path: |
+            dist/*.exe
+            dist/*.dmg
+            dist/*.zip
+            dist/*.blockmap
           if-no-files-found: ignore
           retention-days: 7
 
-  # 显式上传到 GitHub Release（更可控，避免 electron-builder --publish 静默失败）
   release:
     needs: build
-    runs-on: ubuntu-latest # Release 创建不依赖具体平台，用免费 runner
-    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
     steps:
-      # 把两个平台构建产物的 dist/ 都下载下来
       - name: Download Windows dist
         uses: actions/download-artifact@v4
         with:
           name: dist-windows-latest
           path: dist-windows
+      
       - name: Download macOS dist
         uses: actions/download-artifact@v4
         with:
           name: dist-macos-latest
           path: dist-macos
 
-      # 合并到一个 dist/ 目录（action-gh-release 的 files 模式不直接跨目录）
       - name: Merge artifacts
         run: |
           mkdir -p dist
@@ -96,10 +127,19 @@ jobs:
           echo "=== merged dist ==="
           ls -laR dist/
 
-      # 上传到 GitHub Release（自动用 tag 名创建/更新 Release）
+      - name: Get tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ inputs.version }}" ]; then
+            echo "tag=${{ inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: |
             dist/*.exe
             dist/*.dmg

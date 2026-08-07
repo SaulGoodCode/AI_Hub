@@ -9,9 +9,9 @@
   "scripts": {
     "start": "node scripts/launch.js",
     "dev": "node scripts/launch.js --dev",
-    "dist:win": "electron-builder --win",
-    "dist:mac": "electron-builder --mac",
-    "dist": "electron-builder",
+    "dist:win": "electron-builder --win --publish never",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist": "electron-builder --publish never",
     "version:patch": "npm version patch --no-git-tag-version",
     "version:minor": "npm version minor --no-git-tag-version",
     "version:major": "npm version major --no-git-tag-version",
@@ -47,10 +47,14 @@
       "createDesktopShortcut": true
     },
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "build/icon.png",
       "category": "public.app-category.productivity",
-      "publish": null
+      "publish": null,
+      "identity": null
     }
   },
   "devDependencies": {
