@@ -75,8 +75,13 @@ const DEFAULT_CONFIG = {
     { id: 'claude', name: 'Claude', url: 'https://claude.ai/chat/', enabled: true },
     { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', enabled: true },
     { id: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat/', enabled: true },
+    { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app', enabled: true },
   ],
 };
+
+// v0.1.0 的内置站点集合。老版本写出的 config.json 没有 builtinSeen 字段，
+// 迁移时用它作为"已下发过"的初始值，这样只会补上之后版本新增的内置站点。
+const LEGACY_BUILTIN_IDS = ['claude', 'deepseek', 'doubao'];
 
 let configPath = '';
 let config = null;
@@ -153,6 +158,39 @@ function loadConfig() {
   config.lastSiteId = config.lastSiteId || null;
   // 主题：'light'/'dark'/'system'，非法值回退 'system'
   if (!['light', 'dark', 'system'].includes(config.theme)) config.theme = 'system';
+  migrateBuiltinSites();
+}
+
+/** 两个网址是否指向同一站点（只比 hostname，忽略路径差异） */
+function sameHost(a, b) {
+  try {
+    return new URL(a).hostname.toLowerCase() === new URL(b).hostname.toLowerCase();
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 内置站点增量下发：把新版本新增的内置站点补进已有 config.json。
+ * builtinSeen 记录"已经下发过"的内置 id —— 只补没见过的，
+ * 用户主动删掉的内置站点不会在下次启动时复活。
+ * 已经手动加过同域名站点的（比如自己添过 Gemini），也不会再补一份重复的。
+ */
+function migrateBuiltinSites() {
+  if (!Array.isArray(config.builtinSeen)) {
+    config.builtinSeen = LEGACY_BUILTIN_IDS.slice();
+  }
+  let changed = false;
+  for (const site of DEFAULT_CONFIG.sites) {
+    if (config.builtinSeen.includes(site.id)) continue;
+    config.builtinSeen.push(site.id);
+    changed = true;
+    if (!config.sites.some((s) => s.id === site.id || sameHost(s.url, site.url))) {
+      config.sites.push({ ...site });
+      log('已补充内置站点:', site.name, site.url);
+    }
+  }
+  if (changed) saveConfig();
 }
 
 /** 应用主题到 nativeTheme（影响整个应用 + 所有内置网页的 prefers-color-scheme） */
@@ -210,12 +248,105 @@ function saveConfig() {
 }
 
 // ---------------- UA 清理 ----------------
-// 去掉 Electron / 应用标识，让第三方站点识别为普通 Chrome，减少风控/兼容问题
+// 去掉 Electron / 应用标识，让第三方站点识别为普通 Chrome，减少风控/兼容问题。
+// 另外把 Chrome 版本号降到 major.0.0.0：真实 Chrome 自 110 起做 UA reduction，
+// 只报大版本；带完整版本号（如 150.0.7871.212）反而是嵌入式浏览器的明显指纹。
 function cleanUA(ua) {
   return ua
     .replace(new RegExp('\\s' + PRODUCT_NAME.replace(/\s+/g, '') + '/[\\d.]+', 'i'), '')
     .replace(/\sElectron\/[\d.]+/i, '')
-    .replace(/\sElectron\//i, ' ');
+    .replace(/\sElectron\//i, ' ')
+    .replace(/\bChrome\/(\d+)[\d.]*/i, 'Chrome/$1.0.0.0');
+}
+
+// ---------------- Google 登录兼容层 ----------------
+// 症状：内嵌浏览器登录 Google 账号（Gemini）时，先弹 Windows 安全密钥对话框，
+//       关掉后输账号又被拦："请尝试使用其他浏览器"。
+// 成因：Electron 的 UA 客户端提示品牌列表只有 "Chromium"，真实 Chrome 一定同时含
+//       "Google Chrome"，Google 据此判定为嵌入式浏览器。安全密钥弹窗则是 Google 的
+//       passkey 条件式 UI 触发了 Chromium 的 Windows Hello 集成。
+// 对策：请求头侧在这里补齐 Chrome 品牌；页面侧（navigator.userAgentData + 关 WebAuthn）
+//       由 site-preload.js 负责，两侧必须一致，否则对不上更可疑。
+const SITE_PRELOAD = path.join(__dirname, 'site-preload.js');
+const CHROME_FULL_VERSION = process.versions.chrome; // 150.0.7871.212
+const CHROME_MAJOR_VERSION = CHROME_FULL_VERSION.split('.')[0]; // 150
+
+// google.com / google.cn / google.com.hk / google.co.jp 等各地区域名，外加 Google 自家的静态资源域
+const GOOGLE_HOST_RE =
+  /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|gstatic\.com|googleapis\.com|googleusercontent\.com|youtube\.com)$/i;
+
+/** Chromium 报的平台名（真实 Chrome 的 Sec-CH-UA-Platform 取值） */
+function chromePlatform() {
+  if (process.platform === 'darwin') return 'macOS';
+  if (process.platform === 'win32') return 'Windows';
+  return 'Linux';
+}
+
+/**
+ * 往品牌列表里补一项 "Google Chrome"。
+ * 保留 Chromium 自己生成的 GREASE 项（如 "Not;A=Brand"）而不是整串重写，
+ * 这样和浏览器每个版本自带的伪装项保持一致，最接近真实 Chrome。
+ */
+function withChromeBrand(value, version) {
+  const entry = '"Google Chrome";v="' + version + '"';
+  if (!value) return '"Not;A=Brand";v="8", "Chromium";v="' + version + '", ' + entry;
+  if (/"Google Chrome"/i.test(value)) return value;
+  return value + ', ' + entry;
+}
+
+/**
+ * Accept-Language 头：真实 Chrome 发 "zh-CN,zh;q=0.9"（主语言 + 基础语言），
+ * Electron 只发 "zh-CN"。与 site-preload.js 里改写的 navigator.languages 保持一致。
+ */
+function buildAcceptLanguage() {
+  let locale = 'en-US';
+  try {
+    locale = app.getLocale() || locale;
+  } catch (e) {
+    /* app 未 ready 时兜底 */
+  }
+  const base = locale.split('-')[0];
+  return base && base !== locale ? locale + ',' + base + ';q=0.9' : locale;
+}
+
+/**
+ * 给站点 session 挂上 Google 请求头补丁。
+ * 只处理 Google 域名，其余请求原样透传，避免影响别的站点。
+ */
+function attachGoogleCompat(ses) {
+  const acceptLanguage = buildAcceptLanguage();
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    let hostname = '';
+    try {
+      hostname = new URL(details.url).hostname;
+    } catch (e) {
+      /* 非法 URL：原样放行 */
+    }
+    if (!GOOGLE_HOST_RE.test(hostname)) {
+      callback({ requestHeaders: details.requestHeaders });
+      return;
+    }
+
+    const headers = details.requestHeaders;
+    // Chromium 发出的头大小写不固定，按小写名找到实际的 key
+    const keyOf = (name) =>
+      Object.keys(headers).find((k) => k.toLowerCase() === name) || name;
+
+    // 低熵提示：真实 Chrome 每个请求都带，缺了同样可疑，直接补齐
+    const uaKey = keyOf('sec-ch-ua');
+    headers[uaKey] = withChromeBrand(headers[uaKey], CHROME_MAJOR_VERSION);
+    headers[keyOf('sec-ch-ua-mobile')] = '?0';
+    headers[keyOf('sec-ch-ua-platform')] = '"' + chromePlatform() + '"';
+    headers[keyOf('accept-language')] = acceptLanguage;
+
+    // 高熵提示：只有站点用 Accept-CH 要过才会出现，没有就别凭空加（凭空加本身才反常）
+    const fullListKey = keyOf('sec-ch-ua-full-version-list');
+    if (headers[fullListKey]) {
+      headers[fullListKey] = withChromeBrand(headers[fullListKey], CHROME_FULL_VERSION);
+    }
+
+    callback({ requestHeaders: headers });
+  });
 }
 
 // ---------------- 站点视图 ----------------
@@ -264,6 +395,7 @@ function createView(site) {
   } catch (e) {
     console.error('[aihub] setUserAgent failed:', e);
   }
+  attachGoogleCompat(ses);
 
   // 权限：放行麦克风（语音输入）、全屏、剪贴板写入，其余拒绝
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -274,6 +406,7 @@ function createView(site) {
   const view = new WebContentsView({
     webPreferences: {
       session: ses,
+      preload: SITE_PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -281,6 +414,7 @@ function createView(site) {
 
   // 处理 window.open / target=_blank：
   // OAuth 登录弹窗（Google/GitHub 等）必须与主视图共享同一 session，登录态才能打通。
+  // 弹窗同样要带上 site-preload：Google 登录往往整个跑在弹窗里，缺了补丁照样被拦。
   view.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/i.test(url)) {
       return {
@@ -293,6 +427,12 @@ function createView(site) {
           minimizable: false,
           maximizable: false,
           title: 'AI Hub · 登录',
+          webPreferences: {
+            session: ses,
+            preload: SITE_PRELOAD,
+            contextIsolation: true,
+            nodeIntegration: false,
+          },
         },
       };
     }

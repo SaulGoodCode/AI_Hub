@@ -1,7 +1,7 @@
 {
   "name": "ai-chat-hub",
   "productName": "AI Hub",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "把多个 AI 聊天网站（Claude/DeepSeek/豆包…）装进一个可随时唤起的桌面面板：全局快捷键呼出、登录态持久化、单窗口多站点、亮暗主题。",
   "main": "main.js",
   "author": "Saul",
@@ -28,6 +28,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "site-preload.js",
       "renderer/**/*",
       "build/icon.ico",
       "build/icon.png",
