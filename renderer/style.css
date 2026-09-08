@@ -132,8 +132,20 @@ html, body {
   color: #fff;
 }
 
-.ctrl.on {
+.ctrl.on,
+.ctrl.on:hover {
   color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+#btn-pin svg {
+  vertical-align: middle;
+}
+
+.ctrl:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
 }
 
 /* macOS：红绿灯在左侧，隐藏自定义按钮，左侧留空给红绿灯 */
@@ -568,6 +580,20 @@ body.sidebar-collapsed .site-del {
   color: var(--text-dim);
   line-height: 1.5;
   margin: 0;
+}
+
+.chk-field:has(input:disabled),
+.chk-field input[type="checkbox"]:disabled {
+  cursor: default;
+}
+
+.storage-choice input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.modal-actions button:disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .modal-actions button.primary.danger-btn {

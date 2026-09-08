@@ -3,7 +3,7 @@
 /**
  * AI Hub 主进程
  * - 单窗口多标签：WebContentsView 内嵌第三方 AI 网页
- * - 每站点独立 persist: partition → 登录态持久化
+ * - 默认共享持久化会话，可按站点选择独立数据
  * - 全局快捷键唤起/隐藏（默认 Ctrl+Shift+Space，可在 config.json 修改）
  * - 系统托盘常驻，关闭按钮=隐藏到托盘
  * 支持 Windows 11 / macOS
@@ -33,6 +33,8 @@ if (!app) {
 }
 const path = require('path');
 const fs = require('fs');
+const { partitionForSite, siteURL, migrateSiteData, clearSiteData, cleanupPendingPartitions } = require('./site-data');
+const { installPopupHandler } = require('./popup-window');
 
 /**
  * 把 Electron accelerator 字符串渲染为用户友好文本（按当前平台）。
@@ -72,10 +74,10 @@ const DEFAULT_CONFIG = {
   // 通过 nativeTheme.themeSource 同步进内置浏览器（prefers-color-scheme）
   theme: 'system',
   sites: [
-    { id: 'claude', name: 'Claude', url: 'https://claude.ai/chat/', enabled: true },
-    { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', enabled: true },
-    { id: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat/', enabled: true },
-    { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app', enabled: true },
+    { id: 'claude', name: 'Claude', url: 'https://claude.ai/chat/', enabled: true, useIndependentData: false },
+    { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', enabled: true, useIndependentData: false },
+    { id: 'doubao', name: '豆包', url: 'https://www.doubao.com/chat/', enabled: true, useIndependentData: false },
+    { id: 'gemini', name: 'Gemini', url: 'https://gemini.google.com/app', enabled: true, useIndependentData: false },
   ],
 };
 
@@ -90,6 +92,9 @@ let tray = null;
 /** @type {Map<string, {view: WebContentsView, site: object}>} */
 let views = new Map();
 let activeSiteId = null;
+let deletingSiteId = null;
+let overlayOpen = false;
+const sitePopups = new Map();
 let relaunchedForGpu = false;
 
 // ---------------- 日志（写入 userData/aihub.log，便于排查） ----------------
@@ -152,6 +157,7 @@ function loadConfig() {
     config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     saveConfig();
   }
+  if (migrateSiteData(config)) saveConfig();
   config.shortcut = config.shortcut || DEFAULT_CONFIG.shortcut;
   config.alwaysOnTop = !!config.alwaysOnTop;
   config.sidebarCollapsed = !!config.sidebarCollapsed;
@@ -203,34 +209,11 @@ function applyTheme() {
   }
 }
 
-/**
- * 清理孤儿分区数据目录：删除 Partitions/ 下所有不在当前配置站点列表中的分区。
- * 运行中删除 partition 目录会因 Chromium 句柄锁报 EPERM，
- * 所以"删除站点时勾选了删除数据"但目录暂被占用的场景，在这里兜底清理。
- * 必须在创建任何视图之前调用（此时还没有会话引用，删除最可靠）。
- */
-function cleanupOrphanPartitions() {
-  try {
-    const base = path.join(app.getPath('userData'), 'Partitions');
-    if (!fs.existsSync(base)) return;
-    const keep = new Set(config.sites.map((s) => 'site-' + s.id));
-    const removed = [];
-    for (const dir of fs.readdirSync(base)) {
-      if (dir.startsWith('site-') && !keep.has(dir)) {
-        try {
-          fs.rmSync(path.join(base, dir), { recursive: true, force: true });
-          removed.push(dir);
-        } catch (e) {
-          log('清理孤儿分区失败:', dir, e && e.message);
-        }
-      }
-    }
-    if (removed.length > 0) {
-      log('已清理孤儿分区目录:', removed.join(', '));
-    }
-  } catch (e) {
-    log('清理孤儿分区出错:', e && e.message);
+function closeSitePopups(id) {
+  for (const popup of sitePopups.get(id) || []) {
+    if (!popup.isDestroyed()) popup.destroy();
   }
+  sitePopups.delete(id);
 }
 
 /** 当前侧边栏实际宽度（收起时为窄条） */
@@ -388,7 +371,7 @@ function watchFullscreen(wc, label) {
 }
 
 function createView(site) {
-  const partition = 'persist:site-' + site.id; // 持久化 partition → 登录态存磁盘
+  const partition = partitionForSite(site);
   const ses = session.fromPartition(partition);
   try {
     ses.setUserAgent(cleanUA(ses.getUserAgent()));
@@ -412,31 +395,15 @@ function createView(site) {
     },
   });
 
-  // 处理 window.open / target=_blank：
-  // OAuth 登录弹窗（Google/GitHub 等）必须与主视图共享同一 session，登录态才能打通。
-  // 弹窗同样要带上 site-preload：Google 登录往往整个跑在弹窗里，缺了补丁照样被拦。
-  view.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:/i.test(url)) {
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          autoHideMenuBar: true,
-          width: 520,
-          height: 680,
-          parent: mainWindow,
-          minimizable: false,
-          maximizable: false,
-          title: 'AI Hub · 登录',
-          webPreferences: {
-            session: ses,
-            preload: SITE_PRELOAD,
-            contextIsolation: true,
-            nodeIntegration: false,
-          },
-        },
-      };
-    }
-    return { action: 'deny' };
+  installPopupHandler(view.webContents, {
+    parent: mainWindow,
+    session: ses,
+    preload: SITE_PRELOAD,
+    onCreated: (popup) => {
+      if (!sitePopups.has(site.id)) sitePopups.set(site.id, new Set());
+      sitePopups.get(site.id).add(popup);
+      popup.on('closed', () => sitePopups.get(site.id)?.delete(popup));
+    },
   });
 
   watchFullscreen(view.webContents, site.name);
@@ -484,6 +451,7 @@ function layoutViews() {
 }
 
 function showSite(id) {
+  if (id === deletingSiteId) return;
   const site = config.sites.find((s) => s.id === id);
   if (!site || !mainWindow) return;
 
@@ -503,7 +471,7 @@ function showSite(id) {
     /* 忽略未添加的情况 */
   }
   mainWindow.contentView.addChildView(entry.view);
-  entry.view.setVisible(true);
+  entry.view.setVisible(!overlayOpen);
   layoutViews();
 
   // 记住上次站点，下次启动自动打开
@@ -670,6 +638,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     show: false,
+    alwaysOnTop: !!config.alwaysOnTop,
     backgroundColor: '#f6f7fb',
     // Windows 任务栏/标题栏图标（ico 多尺寸；macOS 由 .icns 提供，这里忽略）
     icon: isMac
@@ -751,6 +720,19 @@ function registerShortcut() {
 }
 
 // ---------------- 托盘 ----------------
+function setPinned(pinned) {
+  config.alwaysOnTop = !!pinned;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setAlwaysOnTop(config.alwaysOnTop);
+    if (!mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('window:pinned', config.alwaysOnTop);
+    }
+  }
+  saveConfig();
+  refreshTray();
+  return config.alwaysOnTop;
+}
+
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     { label: '显示主窗口', click: showMain },
@@ -761,9 +743,7 @@ function buildTrayMenu() {
       type: 'checkbox',
       checked: !!config.alwaysOnTop,
       click: (item) => {
-        config.alwaysOnTop = item.checked;
-        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setAlwaysOnTop(item.checked);
-        saveConfig();
+        setPinned(item.checked);
       },
     },
     { type: 'separator' },
@@ -897,13 +877,14 @@ function registerIpc() {
   });
 
   ipcMain.handle('sites:add', (_e, payload) => {
+    if (deletingSiteId) return { ok: false, error: '正在删除站点，请稍后重试' };
     const name = String((payload && payload.name) || '').trim();
     const url = String((payload && payload.url) || '').trim();
     if (!name) return { ok: false, error: '请输入站点名称' };
-    if (!/^https?:\/\//i.test(url)) return { ok: false, error: '请输入以 http(s):// 开头的合法网址' };
+    try { siteURL(url); } catch { return { ok: false, error: '请输入以 http(s):// 开头的合法网址' }; }
 
     const id = 'site-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
-    const site = { id, name, url, enabled: true };
+    const site = { id, name, url, enabled: true, useIndependentData: payload.useIndependentData === true };
     config.sites.push(site);
     saveConfig();
 
@@ -911,70 +892,64 @@ function registerIpc() {
     return { ok: true, site };
   });
 
-  ipcMain.handle('sites:remove', (_e, id, deleteData) => {
-    const idx = config.sites.findIndex((s) => s.id === id);
-    if (idx >= 0) config.sites.splice(idx, 1);
-    saveConfig();
+  ipcMain.handle('sites:remove', async (_e, id, deleteData) => {
+    if (deletingSiteId) return { ok: false, error: '正在删除站点，请稍后重试' };
+    const site = config.sites.find((s) => s.id === id);
+    if (!site) return { ok: false, error: '站点不存在或已被删除' };
+    deletingSiteId = id;
     destroyView(id);
-
-    // 可选：删除该站点关联的本地数据与缓存（persist:site-<id> 分区，含 Cookie/IndexedDB/localStorage）
-    if (deleteData) {
-      // clearStorageData 是核心（真实数据立刻清空）；磁盘目录受 Chromium 句柄锁，
-      // 运行中删除可能 EPERM，重试后仍失败则交给启动时的孤儿分区清理兜底
-      (async () => {
-        const partDir = path.join(app.getPath('userData'), 'Partitions', 'site-' + id);
-        try {
-          const s = session.fromPartition('persist:site-' + id);
-          await s.clearStorageData();
-        } catch (e) {
-          log('清除分区存储失败:', e && e.message);
+    closeSitePopups(id);
+    try {
+      // 独立站点删除后无法通过新增 ID 恢复，必须清空；共享站点仍由用户选择。
+      if (site.useIndependentData === true || deleteData) {
+        await clearSiteData(session.fromPartition(partitionForSite(site)), site, config.sites);
+        if (site.useIndependentData) {
+          if (!Array.isArray(config.pendingDataDeletions)) config.pendingDataDeletions = [];
+          if (!config.pendingDataDeletions.includes(id)) config.pendingDataDeletions.push(id);
         }
-        for (let attempt = 0; attempt < 5; attempt++) {
-          try {
-            if (fs.existsSync(partDir)) {
-              fs.rmSync(partDir, { recursive: true, force: true });
-            }
-            if (!fs.existsSync(partDir)) {
-              log('已删除站点数据目录:', partDir);
-              return;
-            }
-          } catch (e) {
-            /* 句柄未释放，等待后重试 */
-          }
-          await new Promise((r) => setTimeout(r, 300));
-        }
-        log('分区目录暂被占用，将在下次启动时清理:', partDir);
-      })();
-    }
-
-    if (activeSiteId === id) {
-      if (config.sites.length > 0) {
-        showSite(config.sites[0].id);
-      } else {
-        activeSiteId = null;
       }
+      config.sites = config.sites.filter((s) => s.id !== id);
+      if (config.lastSiteId === id) config.lastSiteId = null;
+      saveConfig();
+    } catch (error) {
+      log('删除站点数据失败:', site.name, error.message);
+      deletingSiteId = null;
+      if (activeSiteId === id) showSite(id);
+      return { ok: false, error: '部分本地数据可能已清除，站点仍保留。请重试：' + error.message };
+    } finally {
+      deletingSiteId = null;
     }
-    return true;
+    if (activeSiteId === id) {
+      activeSiteId = null;
+      if (config.sites.length > 0) showSite(config.sites[0].id);
+    }
+    return { ok: true };
   });
 
   // 编辑站点：改名/改网址。保留原 id（登录态 partition 不丢）
   ipcMain.handle('sites:update', (_e, payload) => {
+    if (deletingSiteId) return { ok: false, error: '正在删除站点，请稍后重试' };
     const id = String((payload && payload.id) || '');
     const name = String((payload && payload.name) || '').trim();
     const url = String((payload && payload.url) || '').trim();
     const site = config.sites.find((s) => s.id === id);
     if (!site) return { ok: false, error: '站点不存在或已被删除' };
     if (!name) return { ok: false, error: '请输入站点名称' };
-    if (!/^https?:\/\//i.test(url)) return { ok: false, error: '请输入以 http(s):// 开头的合法网址' };
+    try { siteURL(url); } catch { return { ok: false, error: '请输入以 http(s):// 开头的合法网址' }; }
 
     const urlChanged = site.url !== url;
+    const useIndependentData = typeof payload.useIndependentData === 'boolean'
+      ? payload.useIndependentData : site.useIndependentData;
+    const storageChanged = useIndependentData !== site.useIndependentData;
     site.name = name;
     site.url = url;
+    site.useIndependentData = useIndependentData;
     saveConfig();
 
-    // 网址变了 → 销毁旧视图，用新地址重建（登录态 partition 不变）
-    if (urlChanged) {
+    // 切换模式仅切换会话，保留原分区，避免自动合并账号或删除登录态。
+    if (urlChanged || storageChanged) {
       destroyView(id);
+      closeSitePopups(id);
       if (activeSiteId === id) {
         showSite(id); // showSite 内部会 ensureView 按新 url 重建
       }
@@ -1013,10 +988,7 @@ function registerIpc() {
   ipcMain.handle('window:toggle-pin', () => {
     if (!mainWindow || mainWindow.isDestroyed()) return false;
     const next = !mainWindow.isAlwaysOnTop();
-    mainWindow.setAlwaysOnTop(next);
-    config.alwaysOnTop = next;
-    saveConfig();
-    return next;
+    return setPinned(next);
   });
 
   // 最大化 / 还原（无边框窗口的自定义标题栏按钮）
@@ -1029,6 +1001,7 @@ function registerIpc() {
 
   // 弹窗（设置/添加站点）打开时隐藏站点视图，避免原生子视图遮挡弹窗；关闭时恢复
   ipcMain.on('overlay:set', (_e, open) => {
+    overlayOpen = !!open;
     if (!mainWindow || mainWindow.isDestroyed()) return;
     const entry = views.get(activeSiteId);
     if (!entry) return;
@@ -1142,7 +1115,7 @@ if (!gotLock) {
     loadConfig();
     log('应用启动, platform=' + process.platform, 'argv=' + JSON.stringify(process.argv));
     applyTheme(); // 在创建窗口前应用主题（窗口背景/内置网页配色都会跟随）
-    cleanupOrphanPartitions(); // 清理已删除站点残留的分区数据目录（启动早期无视图引用，可删）
+    if (cleanupPendingPartitions(config, app.getPath('userData'), log)) saveConfig();
     createWindow();
     createTray();
 
@@ -1383,22 +1356,9 @@ if (process.env.AIHUB_DIAG === '1') {
         });
       })()`);
       log('功能测试(UI-添加按钮位置):', addBtnPos);
-      // 删除功能测试：先造一个 partition 数据目录（模拟站点有缓存），
-      // 打开删除确认弹窗 → 勾选"删除数据" → 确认 → 验证站点移除 + 目录清除
-      // 删除目标是排序后的最后一项；先确定其 id
-      const delVictimId = (() => {
-        const names = config.sites.map((s) => s.name);
-        const last = config.sites[config.sites.length - 1];
-        return last ? last.id : '';
-      })();
-      const fakePartDir = path.join(app.getPath('userData'), 'Partitions', 'site-' + delVictimId);
-      try {
-        fs.mkdirSync(fakePartDir, { recursive: true });
-        fs.writeFileSync(path.join(fakePartDir, 'Cookie'), 'fake-cookie-data');
-        log('已创建模拟分区目录:', fakePartDir);
-      } catch (e) {
-        log('创建模拟分区失败:', e && e.message);
-      }
+      // 删除确认 UI 验证；共享/独立数据隔离由 npm test 的真实 Session 测试覆盖。
+      const delVictim = config.sites[config.sites.length - 1];
+      const delVictimId = delVictim ? delVictim.id : '';
       const delTest = await mainWindow.webContents.executeJavaScript(`(async () => {
         const out = {};
         const items = [...document.querySelectorAll('.site-item')];
@@ -1429,11 +1389,11 @@ if (process.env.AIHUB_DIAG === '1') {
         siteCount: config.sites.length,
         names: config.sites.map((s) => s.name),
       }));
-      // 验证：被删站点的 partition 目录应已清除（异步删除，等 2.5s 让重试完成）
-      await new Promise((r) => setTimeout(r, 2500));
+      // 独立数据已清空，目录在下次启动清理；共享会话永不入队整区删除。
       log('功能测试(删除数据验证):', JSON.stringify({
         victim: delVictimId,
-        dirExists: fs.existsSync(fakePartDir),
+        useIndependentData: delVictim && delVictim.useIndependentData,
+        queuedForDirectoryCleanup: (config.pendingDataDeletions || []).includes(delVictimId),
       }));
       // 唤起窗口自动聚焦输入框测试：hide + 模拟快捷键唤起 → 查日志
       // 主窗口先 hide 一下

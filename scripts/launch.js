@@ -84,7 +84,7 @@ function setupWatcher(port) {
   };
   watchFiles._debounce = new Map();
 
-  watchFiles([path.join(root, 'main.js')], 'main', 'main-relaunch');
+  watchFiles(['main.js', 'site-data.js', 'popup-window.js', 'popup-preload.js'].map((file) => path.join(root, file)), 'main', 'main-relaunch');
   watchFiles([path.join(root, 'preload.js')], 'preload', 'preload');
   if (fs.existsSync(rendererDir)) {
     fs.watch(rendererDir, { recursive: true, persistent: true }, (_evt, filename) => {

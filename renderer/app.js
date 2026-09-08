@@ -40,7 +40,7 @@ function renderSites() {
     const li = document.createElement('li');
     li.className = 'site-item' + (site.id === activeId ? ' active' : '');
     li.dataset.siteId = site.id;
-    li.title = site.name + '\n' + site.url;
+    li.title = site.name + '\n' + site.url + '\n' + (site.useIndependentData ? '独立数据' : '共享数据');
 
     const icon = document.createElement('span');
     icon.className = 'site-icon';
@@ -59,7 +59,7 @@ function renderSites() {
 
     const del = document.createElement('button');
     del.className = 'site-del';
-    del.title = '移除站点（本地登录数据保留）';
+    del.title = site.useIndependentData ? '删除站点及独立数据' : '移除站点（可选择清理本地数据）';
     del.textContent = '×';
     del.addEventListener('click', async (e) => {
       e.stopPropagation();
@@ -142,6 +142,7 @@ async function init() {
   platform = cfg.platform;
   currentShortcut = cfg.shortcut;
   currentTheme = cfg.theme || 'system';
+  updatePinState(cfg.alwaysOnTop);
 
   applyThemeToUI(cfg.themeResolved);
 
@@ -224,9 +225,19 @@ window.hub.onThemeChanged((info) => {
 // ---------- 标题栏控制 ----------
 document.getElementById('btn-min').addEventListener('click', () => window.hub.minimize());
 document.getElementById('btn-close').addEventListener('click', () => window.hub.hide());
-document.getElementById('btn-pin').addEventListener('click', async (e) => {
-  const pinned = await window.hub.togglePin();
-  e.currentTarget.classList.toggle('on', pinned);
+function updatePinState(pinned) {
+  const button = document.getElementById('btn-pin');
+  button.classList.toggle('on', !!pinned);
+  button.setAttribute('aria-pressed', String(!!pinned));
+  button.title = pinned ? '取消窗口置顶' : '窗口置顶';
+  button.setAttribute('aria-label', button.title);
+  alwaysOnTopInitial = !!pinned;
+  document.getElementById('chk-top').checked = !!pinned;
+}
+
+window.hub.onPinned(updatePinState);
+document.getElementById('btn-pin').addEventListener('click', async () => {
+  updatePinState(await window.hub.togglePin());
 });
 
 // 最大化 / 还原
@@ -257,6 +268,8 @@ document.querySelector('.titlebar-drag').addEventListener('dblclick', async () =
 const mask = document.getElementById('modal-mask');
 const inpName = document.getElementById('inp-name');
 const inpUrl = document.getElementById('inp-url');
+const chkIndependentData = document.getElementById('chk-independent-data');
+const storageTip = document.getElementById('storage-tip');
 const modalTitle = document.getElementById('modal-title');
 const btnSave = document.getElementById('btn-save');
 const btnDelSite = document.getElementById('btn-del-site');
@@ -266,6 +279,8 @@ function openAddModal() {
   editingSiteId = null;
   inpName.value = '';
   inpUrl.value = '';
+  chkIndependentData.checked = false;
+  storageTip.textContent = '默认共享登录状态和网站数据。勾选后单独保存，可登录其他账号。登录状态会自动保存在本地。';
   modalTitle.textContent = '添加 AI 站点';
   btnSave.textContent = '添加';
   btnDelSite.classList.add('hidden');
@@ -278,6 +293,8 @@ function openEditModal(site) {
   editingSiteId = site.id;
   inpName.value = site.name;
   inpUrl.value = site.url;
+  chkIndependentData.checked = site.useIndependentData === true;
+  storageTip.textContent = '取消勾选使用共享数据。切换模式后可能需要重新登录；原有数据会保留，切回原模式可继续使用，不会自动合并账号。';
   modalTitle.textContent = '编辑站点';
   btnSave.textContent = '保存';
   btnDelSite.classList.remove('hidden');
@@ -310,13 +327,14 @@ inpUrl.addEventListener('keydown', (e) => {
 async function saveSite() {
   const name = inpName.value.trim();
   const url = inpUrl.value.trim();
+  const useIndependentData = chkIndependentData.checked;
   if (!name || !/^https?:\/\//i.test(url)) {
     window.alert('请输入名称和以 http(s):// 开头的完整网址');
     return;
   }
   const res = editingSiteId
-    ? await window.hub.updateSite({ id: editingSiteId, name, url })
-    : await window.hub.addSite({ name, url });
+    ? await window.hub.updateSite({ id: editingSiteId, name, url, useIndependentData })
+    : await window.hub.addSite({ name, url, useIndependentData });
   if (res && res.ok) {
     sites = await window.hub.listSites();
     if (!editingSiteId) activeId = res.site.id;
@@ -342,17 +360,32 @@ const delMask = document.getElementById('modal-del-mask');
 const delSiteName = document.getElementById('del-site-name');
 const chkDelData = document.getElementById('chk-del-data');
 let pendingDeleteId = null;
+let pendingDeleteIndependent = false;
+let deleteInProgress = false;
+const btnDelConfirm = document.getElementById('btn-del-confirm');
+const btnDelCancel = document.getElementById('btn-del-cancel');
 
 function openDeleteModal(site) {
   pendingDeleteId = site.id;
+  pendingDeleteIndependent = site.useIndependentData === true;
   delSiteName.textContent = site.name || '';
-  chkDelData.checked = false;
+  chkDelData.checked = pendingDeleteIndependent;
+  chkDelData.disabled = pendingDeleteIndependent;
+  btnDelConfirm.textContent = pendingDeleteIndependent ? '删除并清理数据' : '删除';
+  document.getElementById('del-data-label').textContent = site.useIndependentData
+    ? '删除该站点的独立数据和缓存（必选）'
+    : '同时清除该网站专属的本地数据';
+  document.getElementById('del-data-tip').textContent = site.useIndependentData
+    ? '删除独立站点会同时清空当前独立空间，包括登录状态和缓存，无法撤销。重新添加将创建全新的独立空间。'
+    : '仅清理此网址所属网站的存储和专属 Cookie。其他入口仍在使用的数据、跨网站登录 Cookie 和共享网络缓存会保留。不勾选则只移除入口。';
   delMask.classList.remove('hidden');
   window.hub.setOverlay(true); // 弹窗打开：隐藏站点视图
 }
 
 function closeDeleteModal() {
+  if (deleteInProgress) return;
   pendingDeleteId = null;
+  pendingDeleteIndependent = false;
   delMask.classList.add('hidden');
   window.hub.setOverlay(false);
 }
@@ -362,15 +395,30 @@ delMask.addEventListener('click', (e) => {
   if (e.target === delMask) closeDeleteModal();
 });
 
-document.getElementById('btn-del-confirm').addEventListener('click', async () => {
-  if (!pendingDeleteId) return;
+btnDelConfirm.addEventListener('click', async () => {
+  if (!pendingDeleteId || deleteInProgress) return;
   const id = pendingDeleteId;
-  const deleteData = chkDelData.checked;
-  closeDeleteModal();
-  await window.hub.removeSite(id, deleteData);
-  sites = await window.hub.listSites();
-  if (id === activeId) activeId = null;
-  renderSites();
+  const deleteData = pendingDeleteIndependent || chkDelData.checked;
+  deleteInProgress = true;
+  btnDelConfirm.disabled = btnDelCancel.disabled = chkDelData.disabled = true;
+  btnDelConfirm.textContent = '正在删除…';
+  let removed = false;
+  try {
+    const res = await window.hub.removeSite(id, deleteData);
+    if (!res || !res.ok) throw new Error((res && res.error) || '删除失败');
+    removed = true;
+    sites = await window.hub.listSites();
+    if (id === activeId) activeId = null;
+    renderSites();
+  } catch (error) {
+    window.alert(error.message || '删除失败，请重试');
+  } finally {
+    deleteInProgress = false;
+    btnDelConfirm.disabled = btnDelCancel.disabled = false;
+    chkDelData.disabled = pendingDeleteIndependent;
+    btnDelConfirm.textContent = pendingDeleteIndependent ? '删除并清理数据' : '删除';
+    if (removed) closeDeleteModal();
+  }
 });
 
 /* ---------- 设置弹窗 ---------- */
@@ -518,8 +566,7 @@ document.getElementById('btn-settings-save').addEventListener('click', async () 
   // 2) 置顶开关（仅在状态需要变化时切换一次）
   const wantTop = chkTop.checked;
   if (wantTop !== alwaysOnTopInitial) {
-    await window.hub.togglePin();
-    alwaysOnTopInitial = wantTop;
+    updatePinState(await window.hub.togglePin());
   }
 
   // 3) 外观主题（仅在变化时更新）

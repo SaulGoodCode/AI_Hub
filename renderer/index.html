@@ -14,7 +14,11 @@
       <span class="app-title">AI Hub</span>
     </div>
     <div class="titlebar-controls">
-      <button id="btn-pin" class="ctrl" title="窗口置顶">📌</button>
+      <button id="btn-pin" class="ctrl" title="窗口置顶" aria-label="窗口置顶" aria-pressed="false">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m16 3 5 5-4 1-3 5v4l-8-8h4l5-3zM2 22l6-6" />
+        </svg>
+      </button>
       <button id="btn-min" class="ctrl win-only" title="最小化">─</button>
       <button id="btn-max" class="ctrl win-only" title="最大化">□</button>
       <button id="btn-close" class="ctrl close win-only" title="隐藏到托盘">✕</button>
@@ -58,7 +62,11 @@
         <span>网址</span>
         <input id="inp-url" type="text" placeholder="https://example.com/chat/" spellcheck="false" />
       </label>
-      <p class="tip">提示：站点登录后，登录状态会自动保存在本地，下次打开无需重新登录。</p>
+      <label class="field chk-field storage-choice">
+        <input type="checkbox" id="chk-independent-data" aria-describedby="storage-tip" />
+        <span class="chk-label">使用独立数据</span>
+      </label>
+      <p class="tip" id="storage-tip">默认共享登录状态和网站数据。勾选后单独保存，可登录其他账号。登录状态会自动保存在本地。</p>
       <div class="modal-actions">
         <button id="btn-del-site" class="danger hidden">删除站点</button>
         <span class="spacer"></span>
@@ -75,8 +83,9 @@
       <p class="del-text">确定删除「<span id="del-site-name"></span>」？</p>
       <label class="field chk-field">
         <input type="checkbox" id="chk-del-data" />
-        <span class="chk-label">同时删除该站点的本地数据和缓存（Cookie、登录状态、IndexedDB 等将一并清除）</span>
+        <span class="chk-label" id="del-data-label">同时删除该站点的本地数据和缓存</span>
       </label>
+      <p class="tip" id="del-data-tip"></p>
       <div class="modal-actions">
         <span class="spacer"></span>
         <button id="btn-del-cancel">取消</button>

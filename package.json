@@ -1,12 +1,13 @@
 {
   "name": "ai-chat-hub",
   "productName": "AI Hub",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "把多个 AI 聊天网站（Claude/DeepSeek/豆包…）装进一个可随时唤起的桌面面板：全局快捷键呼出、登录态持久化、单窗口多站点、亮暗主题。",
   "main": "main.js",
   "author": "Saul",
   "license": "MIT",
   "scripts": {
+    "test": "node scripts/test-site-data.js",
     "start": "node scripts/launch.js",
     "dev": "node scripts/launch.js --dev",
     "dist:win": "electron-builder --win --publish never",
@@ -27,6 +28,9 @@
     "artifactName": "AI-Hub-${version}-${arch}.${ext}",
     "files": [
       "main.js",
+      "site-data.js",
+      "popup-window.js",
+      "popup-preload.js",
       "preload.js",
       "site-preload.js",
       "renderer/**/*",

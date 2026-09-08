@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('hub', {
   togglePin: () => ipcRenderer.invoke('window:toggle-pin'),
   toggleMaximize: () => ipcRenderer.invoke('window:toggle-max'),
   onMaximized: (cb) => ipcRenderer.on('window:maximized', (_e, maximized) => cb(maximized)),
+  onPinned: (cb) => ipcRenderer.on('window:pinned', (_e, pinned) => cb(pinned)),
 
   // 弹窗遮挡控制：打开弹窗时隐藏站点视图
   setOverlay: (open) => ipcRenderer.send('overlay:set', open),

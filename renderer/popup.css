@@ -1,0 +1,14 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 12px "Segoe UI", "Microsoft YaHei", sans-serif; background: light-dark(#fff, #232635); color: light-dark(#1f2330, #e7e9f2); }
+.titlebar { height: 40px; display: flex; align-items: center; gap: 8px; padding-left: 12px; border-bottom: 1px solid light-dark(#e3e5ee, #333849); -webkit-app-region: drag; user-select: none; }
+body.mac .titlebar { padding-left: 84px; padding-right: 12px; }
+#popup-title { min-width: 0; flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+button { flex-shrink: 0; -webkit-app-region: no-drag; font: inherit; cursor: pointer; }
+#open-browser { height: 28px; padding: 0 10px; border: 1px solid light-dark(#e3e5ee, #444a65); border-radius: 6px; background: light-dark(#eef0ff, #2a2f4a); color: light-dark(#5356d9, #adb1ff); }
+#open-browser:hover { background: light-dark(#e0e3ff, #363e60); }
+#open-browser:disabled { opacity: .5; cursor: default; }
+#close-popup { width: 40px; height: 39px; border: 0; background: transparent; color: inherit; font-size: 21px; }
+#close-popup:hover { background: #e5484d; color: #fff; }
+body.mac #close-popup { display: none; }
+button:focus-visible { outline: 2px solid light-dark(#5356d9, #adb1ff); outline-offset: -2px; }
