@@ -35,6 +35,7 @@ const path = require('path');
 const fs = require('fs');
 const { partitionForSite, siteURL, migrateSiteData, clearSiteData, cleanupPendingPartitions } = require('./site-data');
 const { installPopupHandler } = require('./popup-window');
+const { captureNavigationState, restoreNavigationState } = require('./navigation-state');
 
 /**
  * 把 Electron accelerator 字符串渲染为用户友好文本（按当前平台）。
@@ -91,6 +92,8 @@ let mainWindow = null;
 let tray = null;
 /** @type {Map<string, {view: WebContentsView, site: object}>} */
 let views = new Map();
+/** 销毁后台 WebContents 前保存的浏览历史；用于重建时恢复 history.state、滚动位置和表单状态。 */
+const siteNavigationStates = new Map();
 let activeSiteId = null;
 let deletingSiteId = null;
 let overlayOpen = false;
@@ -418,8 +421,10 @@ function createView(site) {
     log('站点加载失败:', site.name, code, desc, url);
   });
 
-  view.webContents.loadURL(site.url).catch((e) => {
-    console.error('[aihub] loadURL failed:', site.url, e);
+  const savedNavigation = siteNavigationStates.get(site.id);
+  siteNavigationStates.delete(site.id);
+  restoreNavigationState(view.webContents, savedNavigation, site.url).catch((e) => {
+    console.error('[aihub] navigation failed:', site.url, e);
   });
 
   return { view, site };
@@ -455,9 +460,10 @@ function showSite(id) {
   const site = config.sites.find((s) => s.id === id);
   if (!site || !mainWindow) return;
 
-  // 需求：切换站点即销毁上一个站点视图，释放内存（登录态在 partition 中持久化，不丢失）
+  // 切换站点时销毁上一个视图释放内存，同时保存 Chromium 导航状态。
+  // 除 partition 中的登录态外，history.state、滚动位置和表单状态也会在重建时恢复。
   for (const vid of [...views.keys()]) {
-    if (vid !== id) destroyView(vid);
+    if (vid !== id) destroyView(vid, { preserveNavigation: true });
   }
 
   // 确保当前视图存在（若被销毁则重建，从持久化分区恢复登录态）
@@ -485,9 +491,24 @@ function showSite(id) {
   }
 }
 
-function destroyView(id) {
+function destroyView(id, options = {}) {
   const entry = views.get(id);
-  if (!entry) return;
+  if (!entry) {
+    if (!options.preserveNavigation) siteNavigationStates.delete(id);
+    return;
+  }
+  if (options.preserveNavigation) {
+    try {
+      const state = captureNavigationState(entry.view.webContents);
+      if (state) siteNavigationStates.set(id, state);
+      else siteNavigationStates.delete(id);
+    } catch (e) {
+      siteNavigationStates.delete(id);
+      log('保存站点导航状态失败:', entry.site.name, e.message);
+    }
+  } else {
+    siteNavigationStates.delete(id);
+  }
   try {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.contentView.removeChildView(entry.view);
@@ -505,6 +526,7 @@ function destroyView(id) {
 
 function destroyAllViews() {
   for (const id of [...views.keys()]) destroyView(id);
+  siteNavigationStates.clear();
   activeSiteId = null;
 }
 
@@ -898,6 +920,7 @@ function registerIpc() {
     if (!site) return { ok: false, error: '站点不存在或已被删除' };
     deletingSiteId = id;
     destroyView(id);
+    siteNavigationStates.delete(id);
     closeSitePopups(id);
     try {
       // 独立站点删除后无法通过新增 ID 恢复，必须清空；共享站点仍由用户选择。
@@ -949,6 +972,7 @@ function registerIpc() {
     // 切换模式仅切换会话，保留原分区，避免自动合并账号或删除登录态。
     if (urlChanged || storageChanged) {
       destroyView(id);
+      siteNavigationStates.delete(id);
       closeSitePopups(id);
       if (activeSiteId === id) {
         showSite(id); // showSite 内部会 ensureView 按新 url 重建

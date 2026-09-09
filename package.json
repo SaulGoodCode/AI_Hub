@@ -28,6 +28,7 @@
     "artifactName": "AI-Hub-${version}-${arch}.${ext}",
     "files": [
       "main.js",
+      "navigation-state.js",
       "site-data.js",
       "popup-window.js",
       "popup-preload.js",
