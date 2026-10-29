@@ -60,8 +60,19 @@ module.exports = async function testUI(testRoot) {
     assert.equal(await run('chkIndependentData.checked'), true);
     await run(`chkIndependentData.checked = false; saveSite()`);
     assert.equal(await run(`sites.find(s => s.id === ${JSON.stringify(isolated.id)}).useIndependentData`), false);
+    // Custom icon: saved when set, cleared back to auto-fetch when emptied, invalid rejected.
+    const customIcon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    await run(`openEditModal(sites.find(s => s.id === ${JSON.stringify(isolated.id)})); setIconInput(${JSON.stringify(customIcon)}); saveSite()`);
+    assert.equal(await run(`sites.find(s => s.id === ${JSON.stringify(isolated.id)}).icon`), customIcon);
+    assert.equal(await run(`listEl.querySelector('[data-site-id=${JSON.stringify(isolated.id)}] img').getAttribute('src')`), customIcon);
+    await run(`openEditModal(sites.find(s => s.id === ${JSON.stringify(isolated.id)}))`);
+    assert.equal(await run('inpIcon.readOnly && currentIconInput()'), customIcon);
+    await run(`setIconInput(''); saveSite()`);
+    assert.equal(await run(`'icon' in sites.find(s => s.id === ${JSON.stringify(isolated.id)})`), false);
+    assert.equal((await run(`window.hub.updateSite({ id: ${JSON.stringify(isolated.id)}, name: 'x', url: 'https://ui.example.test/', icon: 'http://insecure.test/a.png' })`)).ok, false);
     await run(`openAddModal()`);
     assert.equal(await run('chkIndependentData.checked'), false);
+    assert.equal(await run('currentIconInput()'), '');
     await run(`applyThemeToUI('light')`);
     await new Promise(resolve => setTimeout(resolve, 300));
     fs.writeFileSync(path.join(testRoot, 'add-site.png'), (await win.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG());

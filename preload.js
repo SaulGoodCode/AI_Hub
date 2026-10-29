@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('hub', {
 
   // 主进程 → 渲染进程事件
   onActivated: (cb) => ipcRenderer.on('sites:activated', (_e, id) => cb(id)),
+  onFavicon: (cb) => ipcRenderer.on('sites:favicon', (_e, info) => cb(info)),
   onShortcutFailed: (cb) => ipcRenderer.on('shortcut:failed', (_e, shortcut) => cb(shortcut)),
   onThemeChanged: (cb) => ipcRenderer.on('theme:changed', (_e, info) => cb(info)),
 });

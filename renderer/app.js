@@ -23,12 +23,42 @@ let dragSiteId = null; // 拖动排序中的站点 id
 
 const listEl = document.getElementById('site-list');
 
-function faviconUrl(url) {
+/**
+ * 图标候选地址（按优先级）：自定义图标优先；未自定义时依次尝试
+ * 页面上报的真实 favicon → Google 图标服务 → 站点根目录 favicon.ico
+ */
+function iconCandidates(site) {
+  if (site.icon) return [site.icon];
+  const list = [];
+  if (site.favicon) list.push(site.favicon);
   try {
-    return 'https://www.google.com/s2/favicons?domain=' + new URL(url).hostname + '&sz=64';
+    const u = new URL(site.url);
+    list.push('https://www.google.com/s2/favicons?domain=' + u.hostname + '&sz=64');
+    if (u.protocol === 'https:') list.push(u.origin + '/favicon.ico');
   } catch {
-    return '';
+    /* 网址非法：只显示首字母 */
   }
+  return list;
+}
+
+/** 在 container 中渲染图标：候选地址逐个尝试，全部失败显示名称首字母 */
+function fillIcon(container, candidates, name) {
+  container.textContent = '';
+  const fallback = () => {
+    container.textContent = ((name || '').trim()[0] || '?').toUpperCase();
+  };
+  const tryAt = (i) => {
+    if (i >= candidates.length) return fallback();
+    const img = document.createElement('img');
+    img.alt = '';
+    img.addEventListener('error', () => {
+      img.remove();
+      tryAt(i + 1);
+    });
+    img.src = candidates[i];
+    container.appendChild(img);
+  };
+  tryAt(0);
 }
 
 function renderSites() {
@@ -44,14 +74,7 @@ function renderSites() {
 
     const icon = document.createElement('span');
     icon.className = 'site-icon';
-    const img = document.createElement('img');
-    img.src = faviconUrl(site.url);
-    img.alt = '';
-    img.addEventListener('error', () => {
-      img.remove();
-      icon.textContent = (site.name[0] || '?').toUpperCase();
-    });
-    icon.appendChild(img);
+    fillIcon(icon, iconCandidates(site), site.name);
 
     const name = document.createElement('span');
     name.className = 'site-name';
@@ -212,6 +235,14 @@ window.hub.onActivated((id) => {
   renderSites();
 });
 
+// 页面上报了新的 favicon：更新本地缓存并重绘（自定义图标的站点不受影响）
+window.hub.onFavicon(({ id, favicon }) => {
+  const site = sites.find((s) => s.id === id);
+  if (!site || site.favicon === favicon) return;
+  site.favicon = favicon;
+  if (!site.icon) renderSites();
+});
+
 window.hub.onShortcutFailed((shortcut) => {
   window.alert(`快捷键 ${formatShortcut(shortcut)} 注册失败，可能已被其他应用占用。\n请修改配置文件 config.json 中的 shortcut 字段后重启应用。`);
 });
@@ -273,12 +304,80 @@ const storageTip = document.getElementById('storage-tip');
 const modalTitle = document.getElementById('modal-title');
 const btnSave = document.getElementById('btn-save');
 const btnDelSite = document.getElementById('btn-del-site');
+const inpIcon = document.getElementById('inp-icon');
+const iconPreview = document.getElementById('icon-preview');
+const fileIcon = document.getElementById('file-icon');
 let editingSiteId = null; // 非空 = 编辑模式
+let pickedIconData = ''; // 本地图片转成的 data URL（输入框只显示提示文字）
+
+/** 设置弹窗里的自定义图标：data URL 或 https 地址，'' = 自动获取 */
+function setIconInput(icon) {
+  pickedIconData = icon && icon.startsWith('data:') ? icon : '';
+  inpIcon.readOnly = !!pickedIconData;
+  inpIcon.value = pickedIconData ? '已选择本地图片' : icon || '';
+  updateIconPreview();
+}
+
+function currentIconInput() {
+  return pickedIconData || inpIcon.value.trim();
+}
+
+function updateIconPreview() {
+  const editing = sites.find((s) => s.id === editingSiteId);
+  const url = inpUrl.value.trim();
+  fillIcon(iconPreview, iconCandidates({
+    url,
+    icon: currentIconInput(),
+    // 网址没改时沿用已拉取到的真实 favicon
+    favicon: editing && editing.url === url ? editing.favicon : '',
+  }), inpName.value);
+}
+
+/** 把本地图片缩放成 64×64 PNG data URL，控制配置文件体积 */
+function imageFileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取图片失败'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('无法识别该图片'));
+      img.onload = () => {
+        const size = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = size;
+        const scale = Math.min(size / img.width, size / img.height) || 1;
+        const w = img.width * scale;
+        const h = img.height * scale;
+        canvas.getContext('2d').drawImage(img, (size - w) / 2, (size - h) / 2, w, h);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+document.getElementById('btn-icon-pick').addEventListener('click', () => fileIcon.click());
+document.getElementById('btn-icon-reset').addEventListener('click', () => setIconInput(''));
+fileIcon.addEventListener('change', async () => {
+  const file = fileIcon.files && fileIcon.files[0];
+  fileIcon.value = '';
+  if (!file) return;
+  try {
+    setIconInput(await imageFileToDataUrl(file));
+  } catch (error) {
+    window.alert(error.message);
+  }
+});
+inpIcon.addEventListener('input', updateIconPreview);
+inpUrl.addEventListener('input', updateIconPreview);
+inpName.addEventListener('input', updateIconPreview);
 
 function openAddModal() {
   editingSiteId = null;
   inpName.value = '';
   inpUrl.value = '';
+  setIconInput('');
   chkIndependentData.checked = false;
   storageTip.textContent = '默认共享登录状态和网站数据。勾选后单独保存，可登录其他账号。登录状态会自动保存在本地。';
   modalTitle.textContent = '添加 AI 站点';
@@ -293,6 +392,7 @@ function openEditModal(site) {
   editingSiteId = site.id;
   inpName.value = site.name;
   inpUrl.value = site.url;
+  setIconInput(site.icon || '');
   chkIndependentData.checked = site.useIndependentData === true;
   storageTip.textContent = '取消勾选使用共享数据。切换模式后可能需要重新登录；原有数据会保留，切回原模式可继续使用，不会自动合并账号。';
   modalTitle.textContent = '编辑站点';
@@ -319,22 +419,23 @@ mask.addEventListener('click', (e) => {
 inpName.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveSite();
 });
-inpUrl.addEventListener('keydown', (e) => {
+[inpUrl, inpIcon].forEach((input) => input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveSite();
   else if (e.key === 'Escape') closeModal();
-});
+}));
 
 async function saveSite() {
   const name = inpName.value.trim();
   const url = inpUrl.value.trim();
   const useIndependentData = chkIndependentData.checked;
+  const icon = currentIconInput();
   if (!name || !/^https?:\/\//i.test(url)) {
     window.alert('请输入名称和以 http(s):// 开头的完整网址');
     return;
   }
   const res = editingSiteId
-    ? await window.hub.updateSite({ id: editingSiteId, name, url, useIndependentData })
-    : await window.hub.addSite({ name, url, useIndependentData });
+    ? await window.hub.updateSite({ id: editingSiteId, name, url, useIndependentData, icon })
+    : await window.hub.addSite({ name, url, useIndependentData, icon });
   if (res && res.ok) {
     sites = await window.hub.listSites();
     if (!editingSiteId) activeId = res.site.id;

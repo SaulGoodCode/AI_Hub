@@ -514,6 +514,45 @@ body.sidebar-collapsed .site-del {
   border-color: var(--accent);
 }
 
+/* 站点图标编辑行 */
+.icon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 覆盖 .field span 的标签样式 */
+.icon-row .icon-preview {
+  display: flex;
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--icon-fallback-fg);
+}
+
+.icon-btn {
+  height: 34px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.icon-btn:hover {
+  filter: brightness(0.96);
+}
+
 .tip {
   font-size: 11px;
   color: var(--text-dim);

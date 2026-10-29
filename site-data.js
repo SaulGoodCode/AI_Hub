@@ -15,6 +15,23 @@ function siteURL(value) {
   return url;
 }
 
+// 渲染进程 CSP 只放行 https: 与 data: 图片；data URL 限制体积，避免 config.json 膨胀。
+const MAX_ICON_DATA_URL = 256 * 1024;
+
+/** 规范化站点图标：返回合法图标字符串，空值返回 ''，非法抛错 */
+function normalizeIcon(value) {
+  const icon = String(value || '').trim();
+  if (!icon) return '';
+  if (/^data:image\/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[a-z0-9+/=]+$/i.test(icon)) {
+    if (icon.length > MAX_ICON_DATA_URL) throw new Error('图标图片过大，请换一张更小的图片');
+    return icon;
+  }
+  let url;
+  try { url = new URL(icon); } catch { throw new Error('图标需为 https:// 图片地址或本地图片'); }
+  if (url.protocol !== 'https:') throw new Error('图标需为 https:// 图片地址或本地图片');
+  return url.href;
+}
+
 // Only entries read from an existing config need this migration. New entries default to shared.
 function migrateSiteData(config) {
   let changed = false;
@@ -101,4 +118,4 @@ function cleanupPendingPartitions(config, userData, log = () => {}) {
   return true;
 }
 
-module.exports = { SHARED_PARTITION, partitionForSite, siteURL, migrateSiteData, clearSiteData, cleanupPendingPartitions };
+module.exports = { SHARED_PARTITION, partitionForSite, siteURL, normalizeIcon, migrateSiteData, clearSiteData, cleanupPendingPartitions };

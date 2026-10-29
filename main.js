@@ -33,7 +33,7 @@ if (!app) {
 }
 const path = require('path');
 const fs = require('fs');
-const { partitionForSite, siteURL, migrateSiteData, clearSiteData, cleanupPendingPartitions } = require('./site-data');
+const { partitionForSite, siteURL, normalizeIcon, migrateSiteData, clearSiteData, cleanupPendingPartitions } = require('./site-data');
 const { installPopupHandler } = require('./popup-window');
 const { captureNavigationState, restoreNavigationState } = require('./navigation-state');
 
@@ -419,6 +419,24 @@ function createView(site) {
   });
   view.webContents.on('did-fail-load', (_e, code, desc, url) => {
     log('站点加载失败:', site.name, code, desc, url);
+  });
+  // 自动拉取图标：记录页面声明的真实 favicon，未自定义图标时侧边栏使用它
+  view.webContents.on('page-favicon-updated', (_e, favicons) => {
+    let favicon = '';
+    for (const candidate of favicons || []) {
+      try {
+        favicon = normalizeIcon(candidate);
+        if (favicon) break;
+      } catch {
+        /* 跳过 http: 等渲染进程无法加载的地址 */
+      }
+    }
+    if (!favicon || site.favicon === favicon || !config.sites.includes(site)) return;
+    site.favicon = favicon;
+    saveConfig();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('sites:favicon', { id: site.id, favicon });
+    }
   });
 
   const savedNavigation = siteNavigationStates.get(site.id);
@@ -904,9 +922,12 @@ function registerIpc() {
     const url = String((payload && payload.url) || '').trim();
     if (!name) return { ok: false, error: '请输入站点名称' };
     try { siteURL(url); } catch { return { ok: false, error: '请输入以 http(s):// 开头的合法网址' }; }
+    let icon;
+    try { icon = normalizeIcon(payload.icon); } catch (error) { return { ok: false, error: error.message }; }
 
     const id = 'site-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 7);
     const site = { id, name, url, enabled: true, useIndependentData: payload.useIndependentData === true };
+    if (icon) site.icon = icon;
     config.sites.push(site);
     saveConfig();
 
@@ -959,6 +980,8 @@ function registerIpc() {
     if (!site) return { ok: false, error: '站点不存在或已被删除' };
     if (!name) return { ok: false, error: '请输入站点名称' };
     try { siteURL(url); } catch { return { ok: false, error: '请输入以 http(s):// 开头的合法网址' }; }
+    let icon;
+    try { icon = normalizeIcon(payload.icon); } catch (error) { return { ok: false, error: error.message }; }
 
     const urlChanged = site.url !== url;
     const useIndependentData = typeof payload.useIndependentData === 'boolean'
@@ -967,6 +990,11 @@ function registerIpc() {
     site.name = name;
     site.url = url;
     site.useIndependentData = useIndependentData;
+    // 留空 = 不自定义，回落到自动拉取的图标
+    if (icon) site.icon = icon;
+    else delete site.icon;
+    // 换了网址，旧的自动图标不再可信，等新页面重新上报
+    if (urlChanged) delete site.favicon;
     saveConfig();
 
     // 切换模式仅切换会话，保留原分区，避免自动合并账号或删除登录态。
