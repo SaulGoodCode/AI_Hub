@@ -581,9 +581,9 @@ function configureSession(partition) {
   }
   attachGoogleCompat(ses);
 
-  // 权限：放行麦克风（语音输入）、全屏、剪贴板写入，其余拒绝
+  // 权限：放行麦克风（语音输入）、全屏、剪贴板写入、通知（后台站点回复完成时提醒），其余拒绝
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
-    const allowed = ['media', 'fullscreen', 'clipboard-sanitized-write'];
+    const allowed = ['media', 'fullscreen', 'clipboard-sanitized-write', 'notifications'];
     callback(allowed.includes(permission));
   });
   return ses;
@@ -1386,6 +1386,18 @@ function registerIpc() {
       mainWindow.contentView.addChildView(entry.view);
       entry.view.setVisible(true);
       layoutViews();
+    }
+  });
+
+  // 站点通知被点击（site-preload 只转发用户真实点击）：唤起窗口并切到发通知的站点
+  ipcMain.on('site:notification-click', (e) => {
+    for (const [id, entry] of views) {
+      if (entry.view.webContents === e.sender) {
+        log('通知点击，切换到站点:', entry.site.name);
+        if (activeSiteId !== id) showSite(id);
+        showMain();
+        return;
+      }
     }
   });
 

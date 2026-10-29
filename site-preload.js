@@ -11,10 +11,10 @@
  *      在进入登录页时就自动触发，Chromium 在 Windows 上会直接拉起系统"安全密钥/Windows Hello"
  *      对话框。摘掉 PublicKeyCredential 后 Google 会回落到密码登录。
  *
- * 非 Google 域名下本脚本不做任何事。
+ * 非 Google 域名下只做一件事：给页面通知挂点击监听，点通知时唤起窗口并切到该站点。
  */
 
-const { contextBridge, webFrame } = require('electron');
+const { contextBridge, ipcRenderer, webFrame } = require('electron');
 
 // 覆盖 google.com / google.cn / google.com.hk / google.co.jp 等各地区域名
 const GOOGLE_HOST_RE = /(^|\.)(google\.[a-z]{2,3}(\.[a-z]{2})?|youtube\.com)$/i;
@@ -254,12 +254,52 @@ function patchGoogleCompat(brandVersion, fullVersion) {
   }
   return true;
 }
+/**
+ * 在主世界执行：给页面创建的每个 Notification 挂一个点击监听，用户点通知时
+ * 通知主进程唤起窗口并切到本站点（后台站点回复完成时的提醒才有意义）。
+ * onClick 是隔离世界的回调，经 executeInMainWorld 代理过来；只认 isTrusted 的点击，
+ * 页面自己 dispatchEvent 伪造的 click 不能借此抢焦点。
+ */
+function patchNotificationClick(onClick) {
+  const Native = window.Notification;
+  if (typeof Native !== 'function') return false;
+  const Wrapped = function Notification(title, options) {
+    if (!new.target) return Native(title, options); // 保持原生"必须 new"的报错行为
+    const n = Reflect.construct(Native, [title, options], new.target);
+    n.addEventListener('click', (ev) => {
+      if (!ev.isTrusted) return;
+      try {
+        onClick();
+      } catch (e) {
+        /* ignore */
+      }
+    });
+    return n;
+  };
+  Wrapped.prototype = Native.prototype;
+  // 继承静态成员：Notification.permission / requestPermission / maxActions
+  Object.setPrototypeOf(Wrapped, Native);
+  Object.defineProperty(Native.prototype, 'constructor', {
+    configurable: true,
+    writable: true,
+    value: Wrapped,
+  });
+  window.Notification = Wrapped;
+  return true;
+}
+
 try {
   if (GOOGLE_HOST_RE.test(location.hostname)) {
     // 沙箱预加载里 process.versions 可用；万一取不到就从 UA 回推大版本
     const uaMajor = (navigator.userAgent.split('Chrome/')[1] || '').split('.')[0];
     const full = (process && process.versions && process.versions.chrome) || uaMajor + '.0.0.0';
     runInMainWorld(patchGoogleCompat, [String(full).split('.')[0], String(full)]);
+  } else if (typeof contextBridge.executeInMainWorld === 'function') {
+    // Google 域名不打这个补丁：那里的通知权限被伪装成 default（见上），且改动原生对象会增加被识别的风险
+    contextBridge.executeInMainWorld({
+      func: patchNotificationClick,
+      args: [() => ipcRenderer.send('site:notification-click')],
+    });
   }
 } catch (e) {
   console.error('[aihub] site-preload failed:', e);
