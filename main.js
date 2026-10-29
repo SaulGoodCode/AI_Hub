@@ -121,6 +121,124 @@ try {
   /* ignore */
 }
 
+// 日志先进内存缓冲，200ms 内攒一批异步追加，避免主线程每行都做同步磁盘 I/O；
+// 超过 LOG_MAX_BYTES 时把当前文件轮转为 aihub.log.1（只保留一份旧日志）
+const LOG_MAX_BYTES = 5 * 1024 * 1024;
+const LOG_FLUSH_DELAY = 200;
+let logBuffer = [];
+let logFlushScheduled = false;
+let logSize = -1; // -1 = 尚未读取现有日志大小
+
+function logFilePath() {
+  return path.join(app.getPath('userData'), 'aihub.log');
+}
+
+/** 追加 bytes 之前检查是否需要轮转 */
+function rotateLogIfNeeded(file, bytes) {
+  if (logSize < 0) {
+    try {
+      logSize = fs.statSync(file).size;
+    } catch (e) {
+      logSize = 0;
+    }
+  }
+  if (logSize > 0 && logSize + bytes > LOG_MAX_BYTES) {
+    try {
+      fs.renameSync(file, file + '.1');
+    } catch (e) {
+      /* ignore - 轮转失败就继续追加 */
+    }
+    logSize = 0;
+  }
+  logSize += bytes;
+}
+
+function takeLogChunk() {
+  const chunk = logBuffer.join('');
+  logBuffer = [];
+  return chunk;
+}
+
+function flushLogs() {
+  const chunk = takeLogChunk();
+  if (!chunk) {
+    logFlushScheduled = false;
+    return;
+  }
+  try {
+    const file = logFilePath();
+    rotateLogIfNeeded(file, Buffer.byteLength(chunk));
+    fs.appendFile(file, chunk, () => {
+      logFlushScheduled = false;
+      if (logBuffer.length) scheduleLogFlush();
+    });
+  } catch (e) {
+    logFlushScheduled = false;
+  }
+}
+
+function scheduleLogFlush() {
+  if (logFlushScheduled) return;
+  logFlushScheduled = true;
+  setTimeout(flushLogs, LOG_FLUSH_DELAY);
+}
+
+/** 退出前同步写完缓冲区里的日志（app.exit 不会等异步写入） */
+function flushLogsSync() {
+  const chunk = takeLogChunk();
+  if (!chunk) return;
+  try {
+    const file = logFilePath();
+    rotateLogIfNeeded(file, Buffer.byteLength(chunk));
+    fs.appendFileSync(file, chunk);
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+const LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+const CORRUPT_CONFIG_KEEP = 3;
+
+/**
+ * 启动时清理历史文件：
+ * - aihub.log / aihub.log.1 超过 7 天未写入的删除
+ * - config.corrupt-*.json（配置损坏时的备份）只保留最新 3 个
+ */
+function cleanupHistoryFiles() {
+  const dir = app.getPath('userData');
+  const now = Date.now();
+  for (const name of ['aihub.log', 'aihub.log.1']) {
+    const file = path.join(dir, name);
+    try {
+      if (now - fs.statSync(file).mtimeMs > LOG_MAX_AGE_MS) {
+        fs.unlinkSync(file);
+        if (name === 'aihub.log') logSize = -1; // 下次写入时重新读取大小
+        log('已删除过期日志:', name);
+      }
+    } catch (e) {
+      /* 文件不存在或删除失败：忽略 */
+    }
+  }
+
+  let backups = [];
+  try {
+    backups = fs.readdirSync(dir).filter((name) => /^config\.corrupt-\d+\.json$/.test(name));
+  } catch (e) {
+    return;
+  }
+  // 文件名里的时间戳即备份时间，新的排前面
+  const stamp = (name) => Number(name.match(/\d+/)[0]);
+  backups.sort((a, b) => stamp(b) - stamp(a));
+  for (const name of backups.slice(CORRUPT_CONFIG_KEEP)) {
+    try {
+      fs.unlinkSync(path.join(dir, name));
+      log('已删除旧的损坏配置备份:', name);
+    } catch (e) {
+      /* ignore */
+    }
+  }
+}
+
 function log(...args) {
   const line = '[' + new Date().toISOString() + '] ' + args.join(' ');
   // console.log 自身在 stdout pipe 关闭时会 EPIPE，这里也包一层防止主进程崩溃
@@ -129,11 +247,8 @@ function log(...args) {
   } catch (e) {
     /* ignore - stdout pipe 关闭不影响功能 */
   }
-  try {
-    fs.appendFileSync(path.join(app.getPath('userData'), 'aihub.log'), line + '\n');
-  } catch (e) {
-    /* ignore */
-  }
+  logBuffer.push(line + '\n');
+  scheduleLogFlush();
 }
 
 // GPU 不可用（远程桌面/虚拟机/驱动/沙箱受限环境）时自动降级：
@@ -153,6 +268,7 @@ app.on('child-process-gone', (_event, details) => {
     relaunchTimestamp = Date.now();
     log('GPU 进程异常退出，将以软件渲染+关闭沙箱模式重启…');
     app.relaunch({ args: [...process.argv.slice(1), '--disable-gpu', '--no-sandbox'] });
+    flushPendingWrites();
     app.exit(0);
   }
 });
@@ -267,6 +383,9 @@ function sidebarWidth() {
  * 写到一半崩溃/断电时 config.json 要么是旧内容要么是新内容，不会出现半截 JSON。
  */
 function saveConfig() {
+  // 立即写入会带上所有改动，挂起的延迟写入就不需要了
+  clearTimeout(configSaveTimer);
+  configSaveTimer = null;
   const tmpPath = configPath + '.tmp';
   const data = JSON.stringify(config, null, 2);
   try {
@@ -288,6 +407,24 @@ function saveConfig() {
   } catch (e) {
     console.error('[aihub] save config failed:', e);
   }
+}
+
+const CONFIG_SAVE_DELAY = 300;
+let configSaveTimer = null;
+
+/**
+ * 延迟写入：切站、favicon 上报、侧边栏收起、拖动排序这类高频小改动合并成一次落盘。
+ * 增删改站点、设置项等重要改动仍走 saveConfig() 立即写入。
+ */
+function saveConfigSoon() {
+  clearTimeout(configSaveTimer);
+  configSaveTimer = setTimeout(saveConfig, CONFIG_SAVE_DELAY);
+}
+
+/** 退出/重启前把挂起的配置和日志同步写完（app.exit 不会等定时器和异步写入） */
+function flushPendingWrites() {
+  if (configSaveTimer) saveConfig();
+  flushLogsSync();
 }
 
 // ---------------- UA 清理 ----------------
@@ -430,9 +567,13 @@ function watchFullscreen(wc, label) {
   });
 }
 
-function createView(site) {
-  const partition = partitionForSite(site);
+/** 已完成 UA / 请求头 / 权限配置的 partition。这些设置挂在 session 上，每个 partition 只需配一次 */
+const configuredPartitions = new Set();
+
+function configureSession(partition) {
   const ses = session.fromPartition(partition);
+  if (configuredPartitions.has(partition)) return ses;
+  configuredPartitions.add(partition);
   try {
     ses.setUserAgent(cleanUA(ses.getUserAgent()));
   } catch (e) {
@@ -445,6 +586,11 @@ function createView(site) {
     const allowed = ['media', 'fullscreen', 'clipboard-sanitized-write'];
     callback(allowed.includes(permission));
   });
+  return ses;
+}
+
+function createView(site) {
+  const ses = configureSession(partitionForSite(site));
 
   const view = new WebContentsView({
     webPreferences: {
@@ -490,7 +636,7 @@ function createView(site) {
     }
     if (!favicon || site.favicon === favicon || !config.sites.includes(site)) return;
     site.favicon = favicon;
-    saveConfig();
+    saveConfigSoon();
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('sites:favicon', { id: site.id, favicon });
     }
@@ -568,7 +714,7 @@ function showSite(id) {
   // 记住上次站点，下次启动自动打开
   if (config.lastSiteId !== id) {
     config.lastSiteId = id;
-    saveConfig();
+    saveConfigSoon();
   }
 
   if (!mainWindow.webContents.isDestroyed()) {
@@ -648,7 +794,14 @@ function showMain() {
  * - 兼容少数站点使用 contenteditable div（如部分新版页面）
  * - 第一次立即尝试；若站点正在加载，监听 did-finish-load 后再试；1s 后兜底再试一次
  */
+/** 取消上一次唤起挂起的聚焦重试（页面加载中反复按快捷键时，监听器和定时器不再叠加） */
+let cancelPendingFocus = null;
+
 function focusActiveSiteInput() {
+  if (cancelPendingFocus) {
+    cancelPendingFocus();
+    cancelPendingFocus = null;
+  }
   if (!activeSiteId || !views.has(activeSiteId)) return;
   const wc = views.get(activeSiteId).view.webContents;
   if (!wc || wc.isDestroyed()) return;
@@ -731,12 +884,24 @@ function focusActiveSiteInput() {
       .catch((e) => log('focus failed:', e && e.message));
   };
 
+  const timers = [];
+  const tryLater = (ms) => timers.push(setTimeout(tryFocus, ms));
   if (wc.isLoading()) {
-    wc.once('did-finish-load', () => setTimeout(tryFocus, 150));
+    const onLoad = () => tryLater(150);
+    wc.once('did-finish-load', onLoad);
+    cancelPendingFocus = () => {
+      try {
+        wc.removeListener('did-finish-load', onLoad);
+      } catch (e) {
+        /* ignore */
+      }
+      timers.forEach(clearTimeout);
+    };
   } else {
     tryFocus();
     // 兜底：1s 后再试一次，应对站点页面局部刷新/输入框刚渲染的情况
-    setTimeout(tryFocus, 1000);
+    tryLater(1000);
+    cancelPendingFocus = () => timers.forEach(clearTimeout);
   }
 }
 
@@ -847,6 +1012,7 @@ function createWindow() {
       relaunchTimestamp = Date.now();
       log('渲染进程被异常终止，将尝试关闭沙箱重启…');
       app.relaunch({ args: [...process.argv.slice(1), '--no-sandbox'] });
+      flushPendingWrites();
       app.exit(0);
     }
   });
@@ -1023,7 +1189,7 @@ function registerIpc() {
   // 侧边栏收起/展开
   ipcMain.handle('sidebar:toggle', () => {
     config.sidebarCollapsed = !config.sidebarCollapsed;
-    saveConfig();
+    saveConfigSoon();
     layoutViews();
     log('侧边栏' + (config.sidebarCollapsed ? '收起' : '展开'));
     return config.sidebarCollapsed;
@@ -1185,7 +1351,7 @@ function registerIpc() {
       if (!seen.has(site.id)) next.push(site);
     }
     config.sites = next;
-    saveConfig();
+    saveConfigSoon();
     return { ok: true };
   });
 
@@ -1292,6 +1458,7 @@ function startDevServerIfAny() {
           setTimeout(() => {
             app.isQuitting = true;
             app.relaunch();
+            flushPendingWrites();
             app.exit(0);
           }, 150);
           break;
@@ -1317,6 +1484,7 @@ if (!gotLock) {
   app.whenReady().then(() => {
     app.setAppUserModelId('com.saul.aihub');
     loadConfig();
+    cleanupHistoryFiles();
     log('应用启动, platform=' + process.platform, 'argv=' + JSON.stringify(process.argv));
     applyTheme(); // 在创建窗口前应用主题（窗口背景/内置网页配色都会跟随）
     if (cleanupPendingPartitions(config, app.getPath('userData'), log)) saveConfig();
@@ -1356,6 +1524,7 @@ if (!gotLock) {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll();
     destroyAllViews();
+    flushPendingWrites();
   });
 
   app.on('window-all-closed', () => {
