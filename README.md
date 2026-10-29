@@ -88,7 +88,18 @@ CI 自动完成：
 1. `macos-latest` 与 `windows-latest` 并行构建
 2. 版本号与 tag 同步（`v1.0.0` → `package.json` 的 `1.0.0`）
 3. 生成 Windows NSIS 安装包 + macOS dmg/zip
-4. 自动创建 GitHub Release 并上传产物
+4. 自动创建 GitHub Release 并上传产物（含自动更新用的 `latest.yml` / `latest-mac.yml`）
+
+### 自动更新
+
+安装版通过 `electron-updater` 从 GitHub Releases 检查新版本（启动 15 秒后及每 6 小时一次，设置里可关闭）：
+
+- **Windows**：后台静默下载，完成后标题栏出现「重启更新」；不点的话下次退出时自动安装
+- **macOS**：安装包未签名，系统不允许自动替换，只提示「前往下载」并打开对应 Release 页面
+
+> 发布新版本时 Release 里必须有 `latest.yml`（CI 已自动上传），否则客户端查不到更新。v1.2.0 及更早的安装版没有更新功能，需要手动安装一次带更新功能的版本。
+>
+> 本地测试：`AIHUB_UPDATE_URL=http://127.0.0.1:<端口>/` 指向一个放着 `latest.yml` 和安装包的目录，开发模式下也能走完整的检查/下载流程。
 
 > 默认不签名即可出包。如需正式代码签名，在仓库 Secrets 配置 `CSC_LINK` + `CSC_KEY_PASSWORD`，并移除 workflow 中的 `CSC_IDENTITY_AUTO_DISCOVERY: false`。
 
@@ -128,7 +139,13 @@ CI 自动完成：
 
 | 模块 | 职责 |
 |---|---|
-| `main.js` | 主进程：窗口管理、全局快捷键、托盘、`WebContentsView` 多标签、session 分区持久化、主题同步、输入框自动聚焦 |
+| `main.js` | 主进程入口：进程级防护、GPU 降级重启、应用生命周期 |
+| `lib/config.js` / `lib/logger.js` | 配置读写/迁移（原子写入、延迟合并写入）；日志（异步写入、轮转、过期清理） |
+| `lib/window.js` / `lib/tray.js` | 主窗口（唤起/隐藏、位置记忆、输入框自动聚焦、全局快捷键）；托盘 |
+| `lib/site-views.js` | `WebContentsView` 多标签、后台站点 LRU 保活、session 分区配置 |
+| `lib/ipc.js` / `lib/updater.js` | 渲染进程 IPC；自动更新 |
+| `lib/google-compat.js` | UA 清理与 Google 登录兼容（请求头侧） |
+| `shared/ui-constants.js` | 主进程与页面共用的界面尺寸、快捷键显示格式 |
 | `site-data.js` | 数据模式迁移、共享/独立分区选择、按网站清理数据、独立分区目录清理名单 |
 | `popup-window.js` / `popup-preload.js` / `renderer/popup.*` | 链接小窗和本地标题栏：显示网页标题、打开当前网址到默认浏览器、保留原网页的会话及 opener 通信 |
 | `preload.js` | 通过 `contextBridge` 暴露安全 IPC 接口 |
@@ -163,14 +180,17 @@ CI 自动完成：
 
 - 第三方站点由系统 WebView 渲染，无法像浏览器扩展那样深度控制；个别站点对非标准浏览器设限时可能提示升级浏览器
 - macOS dmg 打包依赖 macOS 系统工具链，无法在 Windows 上交叉构建（可通过 CI 的 `macos-latest` runner 解决）
-- 切换站点会销毁旧页面以节省内存，未发送内容会丢失
+- 后台最多保留「设置 → 后台保留站点数」个站点（默认 3）；更早的站点会被回收，切回时重新加载（登录态、滚动位置和表单状态会恢复）
+- macOS 安装包未签名，自动更新只能提示手动下载
 - 独立站点删除时立即清空当前分区，残留目录在下次启动时按明确的清理名单删除；共享分区不会整区清空或删除
 
 ## 项目结构
 
 ```
 ai-chat-hub/
-├── main.js                # 主进程（含调试钩子）
+├── main.js                # 主进程入口与生命周期
+├── lib/                   # 主进程模块（配置/日志/窗口/站点视图/托盘/IPC/更新…）
+├── shared/                # 主进程与页面共用的常量
 ├── site-data.js           # 会话选择、迁移与按网站清理数据
 ├── preload.js             # 预加载脚本
 ├── renderer/              # 渲染层 UI
@@ -179,6 +199,7 @@ ai-chat-hub/
 │   └── app.js
 ├── scripts/
 │   ├── launch.js          # 启动 + 开发热更新 + 测试隔离
+│   ├── diag-hooks.js      # QA 调试钩子（AIHUB_DIAG / AIHUB_SCREENSHOT，不打包）
 │   └── sync-version.js    # CI 版本号同步
 ├── .github/workflows/     # GitHub Actions 自动发布
 ├── build/                 # 应用图标

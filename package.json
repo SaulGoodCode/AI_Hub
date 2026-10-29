@@ -61,12 +61,22 @@
       ],
       "icon": "build/icon.png",
       "category": "public.app-category.productivity",
-      "publish": null,
       "identity": null
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "SaulGoodCode",
+        "repo": "AI_Hub",
+        "releaseType": "release"
+      }
+    ]
   },
   "devDependencies": {
     "electron": "^43.3.0",
     "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

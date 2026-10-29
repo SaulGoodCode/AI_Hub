@@ -99,6 +99,8 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.blockmap
+            # electron-updater 的版本元数据（Windows: latest.yml，macOS: latest-mac.yml）
+            dist/latest*.yml
           if-no-files-found: ignore
           retention-days: 7
 
@@ -145,5 +147,6 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.blockmap
+            dist/latest*.yml
           generate_release_notes: true
           fail_on_unmatched_files: false

@@ -562,6 +562,10 @@ async function openSettings() {
     selKeepAlive.add(new Option(String(keepAliveInitial), String(keepAliveInitial)));
   }
   selKeepAlive.value = String(keepAliveInitial);
+  const update = await window.hub.getUpdateStatus();
+  autoUpdateInitial = update.autoCheck;
+  chkAutoUpdate.checked = autoUpdateInitial;
+  renderUpdateStatus(update);
   settingsMask.classList.remove('hidden');
   window.hub.setOverlay(true); // 弹窗打开：隐藏站点视图，避免被原生子视图遮挡
 }
@@ -685,6 +689,68 @@ document.getElementById('btn-settings-save').addEventListener('click', async () 
     if (!res || !res.ok) window.alert((res && res.error) || '保活设置更新失败');
   }
 
+  // 5) 自动检查更新开关（仅在变化时更新）
+  if (chkAutoUpdate.checked !== autoUpdateInitial) {
+    await window.hub.setAutoCheckUpdates(chkAutoUpdate.checked);
+  }
+
   pendingShortcut = '';
   closeSettings();
 });
+
+/* ---------- 自动更新 ---------- */
+const btnUpdate = document.getElementById('btn-update');
+const btnCheckUpdate = document.getElementById('btn-check-update');
+const updateStatusText = document.getElementById('update-status-text');
+const chkAutoUpdate = document.getElementById('chk-auto-update');
+let autoUpdateInitial = true;
+
+/** 设置页里的状态说明 */
+function describeUpdate(s) {
+  const v = s.version ? 'v' + s.version : '';
+  switch (s.state) {
+    case 'checking': return '正在检查更新…';
+    case 'not-available': return '已是最新版本';
+    case 'available': return `发现新版本 ${v}。macOS 版需手动下载安装，点击标题栏「前往下载」。`;
+    case 'downloading': return `发现新版本 ${v}，正在后台下载… ${s.percent || 0}%`;
+    case 'downloaded': return `${v} 已下载完成，点击标题栏「重启更新」，或下次退出时自动安装。`;
+    case 'error': return '检查更新失败：' + (s.error || '未知错误');
+    default: return s.enabled ? '' : '开发模式下不检查更新（仅安装版可用）';
+  }
+}
+
+function renderUpdateStatus(s) {
+  if (!s) return;
+  // 标题栏按钮：只在有可安装 / 可下载的新版本时出现
+  const ready = s.state === 'downloaded';
+  const manual = s.state === 'available';
+  btnUpdate.classList.toggle('hidden', !ready && !manual);
+  if (ready) {
+    btnUpdate.textContent = `v${s.version} · 重启更新`;
+    btnUpdate.title = '重启 AI Hub 并安装新版本';
+  } else if (manual) {
+    btnUpdate.textContent = `v${s.version} · 前往下载`;
+    btnUpdate.title = '打开 GitHub Release 页面下载新版本';
+  }
+  // 设置页
+  document.getElementById('update-version').textContent = '当前版本 v' + s.currentVersion;
+  updateStatusText.textContent = describeUpdate(s);
+  updateStatusText.classList.toggle('error', s.state === 'error');
+  btnCheckUpdate.disabled = !s.enabled || ['checking', 'downloading', 'downloaded'].includes(s.state);
+}
+
+btnUpdate.addEventListener('click', async () => {
+  const res = await window.hub.applyUpdate();
+  if (res && !res.ok) window.alert(res.error || '更新失败');
+});
+
+btnCheckUpdate.addEventListener('click', async () => {
+  const res = await window.hub.checkForUpdates();
+  if (res && !res.ok) {
+    updateStatusText.textContent = '检查更新失败：' + (res.error || '未知错误');
+    updateStatusText.classList.add('error');
+  }
+});
+
+window.hub.onUpdateStatus(renderUpdateStatus);
+window.hub.getUpdateStatus().then(renderUpdateStatus);

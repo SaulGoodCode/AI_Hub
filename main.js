@@ -12,6 +12,7 @@
  *   config      配置读写/迁移          logger     日志
  *   window      主窗口/唤起/快捷键     site-views 站点视图与 LRU 保活
  *   tray        托盘                   ipc        渲染进程 IPC
+ *   updater     自动更新（electron-updater + GitHub Releases）
  *   google-compat  UA 清理与 Google 登录兼容（请求头侧）
  *   dev-server  开发期热重载钩子
  */
@@ -49,6 +50,7 @@ const { createWindow, showMain, registerShortcut, relaunchOnce } = require('./li
 const { createTray } = require('./lib/tray');
 const { registerIpc } = require('./lib/ipc');
 const { startDevServerIfAny } = require('./lib/dev-server');
+const { initUpdater } = require('./lib/updater');
 const state = require('./lib/state');
 
 // GPU 不可用（远程桌面/虚拟机/驱动/沙箱受限环境）时自动降级：
@@ -104,6 +106,7 @@ if (!gotLock) {
     }
 
     registerIpc();
+    initUpdater();
     startDevServerIfAny();
   });
 

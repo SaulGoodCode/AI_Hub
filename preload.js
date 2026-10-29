@@ -21,6 +21,13 @@ contextBridge.exposeInMainWorld('hub', {
   updateTheme: (theme) => ipcRenderer.invoke('settings:update-theme', theme),
   updateKeepAlive: (count) => ipcRenderer.invoke('settings:update-keep-alive', count),
 
+  // 自动更新
+  getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  setAutoCheckUpdates: (enabled) => ipcRenderer.invoke('update:set-auto-check', !!enabled),
+  applyUpdate: () => ipcRenderer.invoke('update:apply'),
+  onUpdateStatus: (cb) => ipcRenderer.on('update:status', (_e, status) => cb(status)),
+
   // 窗口控制
   minimize: () => ipcRenderer.send('window:minimize'),
   hide: () => ipcRenderer.send('window:hide'),

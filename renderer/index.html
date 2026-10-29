@@ -16,6 +16,8 @@
       <span class="app-title">AI Hub</span>
     </div>
     <div class="titlebar-controls">
+      <!-- 有可安装的更新时才显示：Windows「重启更新」/ macOS「前往下载」 -->
+      <button id="btn-update" class="update-pill hidden" type="button"></button>
       <button id="btn-pin" class="ctrl" title="窗口置顶" aria-label="窗口置顶" aria-pressed="false">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m16 3 5 5-4 1-3 5v4l-8-8h4l5-3zM2 22l6-6" />
@@ -149,6 +151,21 @@
           <option value="10">10</option>
         </select>
         <p class="tip">保留的站点切回时不重新加载，正在生成的回复不会中断；数量越多占用内存越大。</p>
+      </div>
+      <div class="field">
+        <span>版本与更新</span>
+        <div class="update-row">
+          <div id="update-version" class="update-version"></div>
+          <button type="button" id="btn-check-update" class="small-btn">检查更新</button>
+        </div>
+        <div id="update-status-text" class="update-status"></div>
+      </div>
+      <div class="field row-field">
+        <span>自动检查更新</span>
+        <label class="switch">
+          <input type="checkbox" id="chk-auto-update" />
+          <span class="slider"></span>
+        </label>
       </div>
       <p class="tip">提示：至少需要一个修饰键（Ctrl / ⌘ / Alt / Shift）。按 ESC 取消录制。修改后立即生效并写入配置文件。</p>
       <div class="modal-actions">
