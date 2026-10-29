@@ -527,6 +527,8 @@ const settingsMask = document.getElementById('modal-settings-mask');
 const btnRecord = document.getElementById('btn-record');
 const recordHint = document.getElementById('record-hint');
 const chkTop = document.getElementById('chk-top');
+const selKeepAlive = document.getElementById('sel-keep-alive');
+let keepAliveInitial = 3;
 
 const SPECIAL_KEYS = {
   ' ': 'Space',
@@ -565,6 +567,12 @@ async function openSettings() {
   btnRecord.textContent = formatShortcut(currentShortcut);
   recordHint.textContent = '点击按钮后按下新组合键';
   syncThemeButtons(cfg.theme || 'system');
+  keepAliveInitial = cfg.keepAliveSites || 3;
+  // 手动改过 config.json 的非预设值：补一个选项，避免下拉框显示为空
+  if (![...selKeepAlive.options].some((o) => Number(o.value) === keepAliveInitial)) {
+    selKeepAlive.add(new Option(String(keepAliveInitial), String(keepAliveInitial)));
+  }
+  selKeepAlive.value = String(keepAliveInitial);
   settingsMask.classList.remove('hidden');
   window.hub.setOverlay(true); // 弹窗打开：隐藏站点视图，避免被原生子视图遮挡
 }
@@ -679,6 +687,13 @@ document.getElementById('btn-settings-save').addEventListener('click', async () 
     } else {
       window.alert((res && res.error) || '主题更新失败');
     }
+  }
+
+  // 4) 后台保活站点数（仅在变化时更新）
+  const keepAlive = Number(selKeepAlive.value);
+  if (keepAlive !== keepAliveInitial) {
+    const res = await window.hub.updateKeepAlive(keepAlive);
+    if (!res || !res.ok) window.alert((res && res.error) || '保活设置更新失败');
   }
 
   pendingShortcut = '';

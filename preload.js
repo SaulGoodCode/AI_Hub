@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('hub', {
   updateShortcut: (shortcut) => ipcRenderer.invoke('settings:update-shortcut', shortcut),
   toggleSidebar: () => ipcRenderer.invoke('sidebar:toggle'),
   updateTheme: (theme) => ipcRenderer.invoke('settings:update-theme', theme),
+  updateKeepAlive: (count) => ipcRenderer.invoke('settings:update-keep-alive', count),
 
   // 窗口控制
   minimize: () => ipcRenderer.send('window:minimize'),

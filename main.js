@@ -20,6 +20,7 @@ const {
   ipcMain,
   nativeImage,
   nativeTheme,
+  screen,
 } = require('electron');
 
 // 防护：若因 ELECTRON_RUN_AS_NODE 环境变量导致以纯 Node 模式运行，给出明确提示
@@ -74,6 +75,12 @@ const DEFAULT_CONFIG = {
   // 主题：'light' | 'dark' | 'system'（跟随系统）
   // 通过 nativeTheme.themeSource 同步进内置浏览器（prefers-color-scheme）
   theme: 'system',
+  // 同时保活的站点视图数（含当前站点）。后台站点继续运行，切回时不重载、不打断正在生成的回复；
+  // 超出上限时回收最久未用的。1 = 只保留当前站点（最省内存）
+  keepAliveSites: 3,
+  // 上次关闭时的窗口位置/尺寸（非最大化状态下的），null = 首次启动居中
+  windowBounds: null,
+  windowMaximized: false,
   sites: [
     { id: 'claude', name: 'Claude', url: 'https://claude.ai/chat/', enabled: true, useIndependentData: false },
     { id: 'deepseek', name: 'DeepSeek', url: 'https://chat.deepseek.com/', enabled: true, useIndependentData: false },
@@ -152,11 +159,31 @@ app.on('child-process-gone', (_event, details) => {
 
 function loadConfig() {
   configPath = path.join(app.getPath('userData'), 'config.json');
+  config = null;
+  let raw = null;
   try {
-    const raw = fs.readFileSync(configPath, 'utf8');
-    config = JSON.parse(raw);
-    if (!Array.isArray(config.sites)) config.sites = [];
-  } catch {
+    raw = fs.readFileSync(configPath, 'utf8');
+  } catch (e) {
+    if (e.code !== 'ENOENT') log('读取配置失败:', e.message);
+  }
+  if (raw !== null) {
+    try {
+      config = JSON.parse(raw);
+      if (!config || typeof config !== 'object' || Array.isArray(config)) throw new Error('配置不是 JSON 对象');
+      if (!Array.isArray(config.sites)) config.sites = [];
+    } catch (e) {
+      // 配置损坏：先把原文件另存，避免下面写入默认配置时把用户的站点列表彻底覆盖掉
+      config = null;
+      const backup = configPath.replace(/\.json$/, '') + '.corrupt-' + Date.now() + '.json';
+      try {
+        fs.copyFileSync(configPath, backup);
+        log('配置文件损坏，已备份到', backup, '原因:', e.message);
+      } catch (copyErr) {
+        log('配置文件损坏且备份失败:', copyErr.message);
+      }
+    }
+  }
+  if (!config) {
     config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
     saveConfig();
   }
@@ -167,7 +194,18 @@ function loadConfig() {
   config.lastSiteId = config.lastSiteId || null;
   // 主题：'light'/'dark'/'system'，非法值回退 'system'
   if (!['light', 'dark', 'system'].includes(config.theme)) config.theme = 'system';
+  config.keepAliveSites = normalizeKeepAlive(config.keepAliveSites);
+  config.windowMaximized = !!config.windowMaximized;
   migrateBuiltinSites();
+}
+
+const KEEP_ALIVE_MAX = 10;
+
+/** 保活数量规范化：非法值回退默认，限制在 1..KEEP_ALIVE_MAX */
+function normalizeKeepAlive(value) {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) return DEFAULT_CONFIG.keepAliveSites;
+  return Math.min(n, KEEP_ALIVE_MAX);
 }
 
 /** 两个网址是否指向同一站点（只比 hostname，忽略路径差异） */
@@ -224,10 +262,29 @@ function sidebarWidth() {
   return config.sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH;
 }
 
+/**
+ * 原子写入配置：先写临时文件并刷盘，再 rename 覆盖。
+ * 写到一半崩溃/断电时 config.json 要么是旧内容要么是新内容，不会出现半截 JSON。
+ */
 function saveConfig() {
+  const tmpPath = configPath + '.tmp';
+  const data = JSON.stringify(config, null, 2);
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf8');
+    const fd = fs.openSync(tmpPath, 'w');
+    try {
+      fs.writeFileSync(fd, data, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.renameSync(tmpPath, configPath);
+    } catch (e) {
+      // Windows 上目标文件被杀毒软件/索引服务短暂占用时 rename 会 EPERM/EBUSY，退回直接覆盖
+      fs.writeFileSync(configPath, data, 'utf8');
+      try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    }
   } catch (e) {
     console.error('[aihub] save config failed:', e);
   }
@@ -478,15 +535,25 @@ function showSite(id) {
   const site = config.sites.find((s) => s.id === id);
   if (!site || !mainWindow) return;
 
-  // 切换站点时销毁上一个视图释放内存，同时保存 Chromium 导航状态。
-  // 除 partition 中的登录态外，history.state、滚动位置和表单状态也会在重建时恢复。
-  for (const vid of [...views.keys()]) {
-    if (vid !== id) destroyView(vid, { preserveNavigation: true });
-  }
-
-  // 确保当前视图存在（若被销毁则重建，从持久化分区恢复登录态）
+  // 确保当前视图存在（若被回收则重建，从持久化分区恢复登录态）
   const entry = ensureView(site);
   activeSiteId = id;
+
+  // views 的插入顺序即 LRU 顺序：当前站点移到末尾（最近使用）
+  views.delete(id);
+  views.set(id, entry);
+
+  // 其余站点转入后台：移出窗口但保留 WebContents，页面继续运行（流式回复不中断）
+  for (const [vid, other] of views) {
+    if (vid === id) continue;
+    other.view.setVisible(false);
+    try {
+      mainWindow.contentView.removeChildView(other.view);
+    } catch (e) {
+      /* 忽略未添加的情况 */
+    }
+  }
+  evictBackgroundViews();
 
   // 重新 add 保证 z-order 在最上
   try {
@@ -506,6 +573,19 @@ function showSite(id) {
 
   if (!mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send('sites:activated', id);
+  }
+}
+
+/**
+ * 超出保活上限时回收最久未用的后台视图。
+ * 回收前保存 Chromium 导航状态：除 partition 中的登录态外，
+ * history.state、滚动位置和表单状态也会在重建时恢复。
+ */
+function evictBackgroundViews() {
+  const limit = normalizeKeepAlive(config.keepAliveSites);
+  for (const vid of [...views.keys()]) {
+    if (views.size <= limit) break;
+    if (vid !== activeSiteId) destroyView(vid, { preserveNavigation: true });
   }
 }
 
@@ -669,14 +749,69 @@ function toggleMain() {
   }
 }
 
+const WINDOW_DEFAULT_SIZE = { width: 1180, height: 760 };
+const WINDOW_MIN_SIZE = { width: 960, height: 620 };
+
+/**
+ * 还原上次的窗口位置/尺寸。
+ * 位置只在标题栏仍落在某块显示器工作区内时才沿用（外接显示器拔掉、分辨率变化后
+ * 窗口可能跑到屏幕外拖不回来），否则只保留尺寸、由系统居中。
+ */
+function restoredWindowBounds() {
+  const b = config.windowBounds;
+  if (!b || ![b.x, b.y, b.width, b.height].every(Number.isFinite)) return { ...WINDOW_DEFAULT_SIZE };
+  const width = Math.max(WINDOW_MIN_SIZE.width, Math.round(b.width));
+  const height = Math.max(WINDOW_MIN_SIZE.height, Math.round(b.height));
+  const x = Math.round(b.x);
+  const y = Math.round(b.y);
+  const titlebarVisible = screen.getAllDisplays().some(({ workArea: a }) => {
+    const overlapX = Math.min(x + width, a.x + a.width) - Math.max(x, a.x);
+    const overlapY = Math.min(y + TITLEBAR_HEIGHT, a.y + a.height) - Math.max(y, a.y);
+    return overlapX >= 100 && overlapY > 0;
+  });
+  return titlebarVisible ? { x, y, width, height } : { width, height };
+}
+
+let boundsSaveTimer = null;
+/**
+ * 窗口创建后的实际尺寸。Windows 非整数缩放（如 175%）下无边框窗口创建时尺寸会被
+ * 取整放大几个像素；若原样保存，每次重启都会再大一点。用户没动过窗口时不覆盖已保存的值。
+ */
+let createdBounds = null;
+
+const sameBounds = (a, b) =>
+  !!a && !!b && a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+
+/** 记录非最大化状态下的窗口位置/尺寸，以及是否最大化 */
+function persistWindowBounds() {
+  clearTimeout(boundsSaveTimer);
+  boundsSaveTimer = null;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  // 最小化/全屏时的尺寸不是用户想要的窗口尺寸
+  if (mainWindow.isMinimized() || mainWindow.isFullScreen()) return;
+  const b = mainWindow.getNormalBounds();
+  const next = { x: b.x, y: b.y, width: b.width, height: b.height };
+  const maximized = mainWindow.isMaximized();
+  const boundsChanged = !sameBounds(next, createdBounds) && !sameBounds(next, config.windowBounds);
+  if (!boundsChanged && config.windowMaximized === maximized) return;
+  if (boundsChanged) config.windowBounds = next;
+  config.windowMaximized = maximized;
+  saveConfig();
+}
+
+/** 拖动/缩放过程中事件很密集，停下 500ms 后再落盘 */
+function schedulePersistWindowBounds() {
+  clearTimeout(boundsSaveTimer);
+  boundsSaveTimer = setTimeout(persistWindowBounds, 500);
+}
+
 function createWindow() {
   const isMac = process.platform === 'darwin';
 
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 760,
-    minWidth: 960,
-    minHeight: 620,
+    ...restoredWindowBounds(),
+    minWidth: WINDOW_MIN_SIZE.width,
+    minHeight: WINDOW_MIN_SIZE.height,
     show: false,
     alwaysOnTop: !!config.alwaysOnTop,
     backgroundColor: '#f6f7fb',
@@ -695,6 +830,8 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+
+  createdBounds = mainWindow.getNormalBounds();
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
@@ -718,14 +855,21 @@ function createWindow() {
   });
   watchFullscreen(mainWindow.webContents, '主窗口');
 
-  mainWindow.on('resize', layoutViews);
+  mainWindow.on('resize', () => {
+    layoutViews();
+    schedulePersistWindowBounds();
+  });
+  mainWindow.on('move', schedulePersistWindowBounds);
   mainWindow.on('maximize', () => {
     if (!mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('window:maximized', true);
+    schedulePersistWindowBounds();
   });
   mainWindow.on('unmaximize', () => {
     if (!mainWindow.webContents.isDestroyed()) mainWindow.webContents.send('window:maximized', false);
+    schedulePersistWindowBounds();
   });
   mainWindow.on('close', (e) => {
+    persistWindowBounds();
     // 点关闭 = 隐藏到托盘；真正退出走托盘菜单 / Cmd+Q
     if (!app.isQuitting) {
       e.preventDefault();
@@ -737,6 +881,7 @@ function createWindow() {
     mainWindow = null;
   });
   mainWindow.once('ready-to-show', () => {
+    if (config.windowMaximized) mainWindow.maximize();
     mainWindow.show();
     log('主窗口已显示');
     // 自动打开上次使用的站点（没有则用第一个）
@@ -828,11 +973,27 @@ function registerIpc() {
     sidebarCollapsed: !!config.sidebarCollapsed,
     theme: config.theme,
     themeResolved: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
+    keepAliveSites: config.keepAliveSites,
     version: app.getVersion(),
   }));
 
+  // 后台保活站点数：调小时立即回收多余的后台视图
+  ipcMain.handle('settings:update-keep-alive', (_e, value) => {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 1 || n > KEEP_ALIVE_MAX) {
+      return { ok: false, error: '保活数量需为 1–' + KEEP_ALIVE_MAX + ' 的整数' };
+    }
+    config.keepAliveSites = n;
+    saveConfig();
+    evictBackgroundViews();
+    log('后台保活站点数已更新:', n);
+    return { ok: true, keepAliveSites: n };
+  });
+
   // 切换亮/暗/跟随系统主题：写入配置 + 应用 nativeTheme.themeSource，
-  // 内置网页的 prefers-color-scheme 会自动跟随（Claude/DeepSeek/豆包等支持暗色的站点即时生效）
+  // 内置网页的 prefers-color-scheme 会自动跟随（Claude/DeepSeek/豆包等支持暗色的站点即时生效）。
+  // 不主动 reload 站点：重载会打断正在进行的对话；少数加载时缓存配色的站点，
+  // 用户可右键刷新或下次加载时生效。
   ipcMain.handle('settings:update-theme', (_e, theme) => {
     if (!['light', 'dark', 'system'].includes(theme)) {
       return { ok: false, error: '无效主题: ' + theme };
@@ -840,15 +1001,6 @@ function registerIpc() {
     config.theme = theme;
     saveConfig();
     applyTheme();
-    // 主题变化后刷新当前站点视图（部分站点加载时缓存配色，重载后才会切）
-    if (activeSiteId && views.has(activeSiteId)) {
-      const wc = views.get(activeSiteId).view.webContents;
-      try {
-        wc.reload();
-      } catch (e) {
-        /* ignore */
-      }
-    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('theme:changed', {
         theme: config.theme,

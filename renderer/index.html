@@ -137,6 +137,17 @@
         </div>
         <p class="tip">主题会同步到内置网页（支持深色模式的站点自动跟随）。</p>
       </div>
+      <div class="field">
+        <span>后台保留站点数（含当前站点）</span>
+        <select id="sel-keep-alive">
+          <option value="1">1（仅当前站点，最省内存）</option>
+          <option value="2">2</option>
+          <option value="3">3（推荐）</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+        <p class="tip">保留的站点切回时不重新加载，正在生成的回复不会中断；数量越多占用内存越大。</p>
+      </div>
       <p class="tip">提示：至少需要一个修饰键（Ctrl / ⌘ / Alt / Shift）。按 ESC 取消录制。修改后立即生效并写入配置文件。</p>
       <div class="modal-actions">
         <button id="btn-settings-close">关闭</button>
