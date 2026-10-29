@@ -3,7 +3,7 @@
 const path = require('path');
 const { BrowserWindow, WebContentsView, ipcMain, shell } = require('electron');
 
-const TITLEBAR_HEIGHT = 40;
+const { POPUP_TITLEBAR_HEIGHT: TITLEBAR_HEIGHT } = require('./shared/ui-constants');
 const popups = new Map();
 let ipcRegistered = false;
 

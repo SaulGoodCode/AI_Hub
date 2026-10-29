@@ -203,20 +203,9 @@ async function toggleSidebar() {
 
 document.getElementById('btn-collapse').addEventListener('click', toggleSidebar);
 
+/** CommandOrControl → 平台显示名（实现在 shared/ui-constants.js，与主进程托盘共用） */
 function formatShortcut(accel) {
-  // CommandOrControl → 平台显示名
-  return accel
-    .split('+')
-    .map((k) => {
-      if (k === 'CommandOrControl') return platform === 'darwin' ? '⌘' : 'Ctrl';
-      if (k === 'Control') return 'Ctrl';
-      if (k === 'Command' || k === 'Cmd') return '⌘';
-      if (k === 'Option') return 'Alt';
-      if (k === 'Super') return 'Win';
-      if (k === 'Esc') return 'Esc';
-      return k;
-    })
-    .join('+');
+  return window.AIHubUI.formatShortcut(accel, platform);
 }
 
 /** 更新底部"快捷键提示"，必须在知道 currentShortcut 和 platform 后调用 */

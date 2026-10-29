@@ -34,6 +34,8 @@
       "popup-preload.js",
       "preload.js",
       "site-preload.js",
+      "lib/**/*",
+      "shared/**/*",
       "renderer/**/*",
       "build/icon.ico",
       "build/icon.png",

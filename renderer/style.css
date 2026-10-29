@@ -1,8 +1,7 @@
 /* AI Hub 渲染层样式 —— 浅色主题（默认） */
 
+/* --titlebar-height / --sidebar-width / --sidebar-collapsed-width 由 shared/ui-constants.js 写入（与主进程共用一份数值） */
 :root {
-  --sidebar-width: 232px;
-  --titlebar-height: 36px;
   --bg: #f6f7fb;
   --sidebar-bg: #f0f1f6;
   --surface: #ffffff;
@@ -236,7 +235,7 @@ body.platform-win .win-only {
 }
 
 body.sidebar-collapsed #sidebar {
-  width: 60px;
+  width: var(--sidebar-collapsed-width);
 }
 
 body.sidebar-collapsed .sidebar-head {

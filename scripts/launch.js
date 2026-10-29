@@ -8,7 +8,7 @@
  * 文件变化策略：
  *   - renderer/ 任意文件 → webContents.reload()（秒级生效，无窗口闪动）
  *   - preload.js         → webContents.reload()（preload 必须重新加载）
- *   - main.js            → app.relaunch()（主进程代码无法热替换，会闪一下窗口）
+ *   - main.js / lib/ / shared/ 等主进程代码 → app.relaunch()（无法热替换，会闪一下窗口）
  * 200ms debounce 避免编辑器保存时多次触发。
  */
 const { spawn } = require('child_process');
@@ -84,8 +84,14 @@ function setupWatcher(port) {
   };
   watchFiles._debounce = new Map();
 
+  const dirFiles = (dir) =>
+    fs.existsSync(path.join(root, dir))
+      ? fs.readdirSync(path.join(root, dir)).filter((f) => f.endsWith('.js')).map((f) => dir + '/' + f)
+      : [];
   watchFiles(
-    ['main.js', 'navigation-state.js', 'site-data.js', 'popup-window.js', 'popup-preload.js'].map((file) => path.join(root, file)),
+    // shared/ 同时被主进程和页面使用，按主进程处理（完整重启会连页面一起重新加载）
+    ['main.js', 'navigation-state.js', 'site-data.js', 'popup-window.js', 'popup-preload.js', ...dirFiles('lib'), ...dirFiles('shared')]
+      .map((file) => path.join(root, file)),
     'main',
     'main-relaunch'
   );

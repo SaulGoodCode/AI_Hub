@@ -3,39 +3,21 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
 const electron = require('electron');
+const siteData = require('../site-data');
 
 module.exports = async function testUI(testRoot) {
   const root = path.resolve(__dirname, '..');
   let failClear = false;
-  const mainRequire = createRequire(path.join(root, 'main.js'));
   // Exercise the production config/IPC handlers without starting a tray, global
   // shortcut or external site. All actual Session and renderer APIs remain real.
-  const fakeApp = new Proxy(electron.app, {
-    get(target, key) {
-      if (key === 'whenReady') return () => new Promise(() => {});
-      if (key === 'requestSingleInstanceLock') return () => true;
-      if (key === 'on') return () => {};
-      const value = target[key];
-      return typeof value === 'function' ? value.bind(target) : value;
-    },
-  });
-  const sandbox = {
-    require: (name) => {
-      if (name === 'electron') return { ...electron, app: fakeApp };
-      if (name === './site-data') {
-        const data = mainRequire(name);
-        return { ...data, clearSiteData: (...args) => failClear ? Promise.reject(new Error('TEST clear failure')) : data.clearSiteData(...args) };
-      }
-      return mainRequire(name);
-    },
-    __dirname: root, module: { exports: {} }, console, process, URL, setTimeout, clearTimeout,
-  };
-  vm.runInNewContext(fs.readFileSync(path.join(root, 'main.js'), 'utf8') + '\nmodule.exports = { loadConfig, registerIpc };', sandbox);
-  sandbox.module.exports.loadConfig();
-  sandbox.module.exports.registerIpc();
+  // lib/ipc.js calls siteData.clearSiteData through the module object, so a
+  // controlled failure can be injected here.
+  const realClearSiteData = siteData.clearSiteData;
+  siteData.clearSiteData = (...args) =>
+    failClear ? Promise.reject(new Error('TEST clear failure')) : realClearSiteData(...args);
+  require('../lib/config').loadConfig();
+  require('../lib/ipc').registerIpc();
 
   const ses = electron.session.fromPartition('ui-test');
   ses.protocol.handle('https', () => new Response('', { status: 404 }));
@@ -142,5 +124,8 @@ module.exports = async function testUI(testRoot) {
     console.log('PASS: independent cleanup mandatory in UI and IPC; shared cleanup remains optional');
     console.log('PASS: real add/edit/delete UI + IPC, saved modes, deletion failure and retry');
     console.log('UI screenshots:', path.join(testRoot, 'add-site.png'), path.join(testRoot, 'delete-shared.png'));
-  } finally { win.destroy(); }
+  } finally {
+    win.destroy();
+    siteData.clearSiteData = realClearSiteData;
+  }
 };
